@@ -1,0 +1,17 @@
+{
+  "name": "ticket-to-pr-pipeline",
+  "version": "1.0.0",
+  "description": "Capstone: real Locator/Fixer/Gate/PR agent pipeline for a seeded bug, wired to a front end.",
+  "main": "server/server.js",
+  "scripts": {
+    "build": "cd client && npm install && npm run build",
+    "start": "node server/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "diff": "^5.2.0"
+  }
+}

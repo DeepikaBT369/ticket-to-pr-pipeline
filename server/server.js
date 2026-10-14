@@ -68,6 +68,14 @@ app.get('/api/pipeline/:id/locate', (req, res) => {
   const ticket = tickets[req.params.id];
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
 
+  const done = store.get(req.params.id);
+  if (done?.status === store.STATUS.APPROVED && done.files) {
+    return res.json({
+      ticket: { id: req.params.id, title: ticket.title, description: ticket.description },
+      files: done.files,
+    });
+  }
+
   const files = locate(ticket, REPO_ROOT);
   store.setStatus(req.params.id, store.STATUS.LOCATED, { files });
   res.json({
@@ -79,6 +87,13 @@ app.get('/api/pipeline/:id/locate', (req, res) => {
 app.get('/api/pipeline/:id/fix', async (req, res) => {
   const ticket = tickets[req.params.id];
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+
+  // After approval the file on disk is already fixed, so re-running would give
+  // different numbers. Show what was decided at the time instead.
+  const done = store.get(req.params.id);
+  if (done?.status === store.STATUS.APPROVED && done.candidates && done.winner) {
+    return res.json({ candidates: done.candidates, winnerId: done.winner.id, meta: done.generated?.meta });
+  }
 
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   const testFile = path.join(REPO_ROOT, ticket.testFile);
@@ -134,6 +149,7 @@ app.get('/api/pipeline/:id/gate', (req, res) => {
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
+  if (run.status === store.STATUS.APPROVED && run.gate) return res.json(run.gate);
 
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   const testFile = path.join(REPO_ROOT, ticket.testFile);
@@ -151,6 +167,7 @@ app.get('/api/pipeline/:id/pr', async (req, res) => {
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
+  if (run.status === store.STATUS.APPROVED && run.pr) return res.json(run.pr);
 
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   const original = fs.readFileSync(targetFile, 'utf8');

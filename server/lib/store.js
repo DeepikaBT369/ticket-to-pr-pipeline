@@ -27,6 +27,9 @@ function ensure(ticketId) {
 
 function setStatus(ticketId, status, extra = {}) {
   const run = ensure(ticketId);
+  // Once a ticket is approved, its run is frozen. Revisiting an earlier stage
+  // on screen must not push the ticket back to "gated" or overwrite its results.
+  if (run.status === STATUS.APPROVED && status !== STATUS.APPROVED) return run;
   Object.assign(run, extra, { status });
   run.history.push({ status, at: Date.now() });
   return run;

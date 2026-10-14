@@ -9,6 +9,7 @@ const { runGate } = require('./lib/gate');
 const { buildDiff, explanation, commitMessage } = require('./lib/prAgent');
 const store = require('./lib/store');
 const { generateCandidates } = require('./lib/llm');
+const github = require('./lib/github');
 
 const REPO_ROOT = path.join(__dirname, '..', 'target-repo');
 const app = express();
@@ -27,12 +28,24 @@ TICKET_IDS.forEach((id) => {
   originalFiles[rel] = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 });
 
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', async (req, res) => {
   Object.entries(originalFiles).forEach(([rel, content]) => {
     fs.writeFileSync(path.join(REPO_ROOT, rel), content);
   });
   store.reset(TICKET_IDS);
-  res.json({ reset: true });
+
+  // Put the GitHub repo's main branch back to the buggy baseline too.
+  let githubReset = null;
+  if (github.enabled()) {
+    try {
+      await github.resetMainToBaseline();
+      githubReset = 'ok';
+    } catch (err) {
+      console.error(`[github] reset failed: ${err.message}`);
+      githubReset = err.message;
+    }
+  }
+  res.json({ reset: true, githubReset });
 });
 
 app.get('/api/tickets', (req, res) => {
@@ -133,7 +146,7 @@ app.get('/api/pipeline/:id/gate', (req, res) => {
   res.json(gateResults);
 });
 
-app.get('/api/pipeline/:id/pr', (req, res) => {
+app.get('/api/pipeline/:id/pr', async (req, res) => {
   const ticket = tickets[req.params.id];
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
@@ -148,21 +161,59 @@ app.get('/api/pipeline/:id/pr', (req, res) => {
     commitMessage: commitMessage(req.params.id, run.winner),
   };
 
+  // Open a real pull request on GitHub (once per run). The PR exists BEFORE
+  // the human decision, like a real review flow: Approve merges it, Request
+  // changes comments on it.
+  if (github.enabled()) {
+    if (!run.githubPending) {
+      run.githubPending = github
+        .openPullRequest({
+          ticketId: req.params.id,
+          ticket,
+          candidate: run.winner,
+          explanation: prPayload.explanation,
+          commitMessage: prPayload.commitMessage,
+          gate: run.gate,
+          source: run.generated?.meta?.source === 'llm' ? `AI (${run.generated.meta.model})` : 'pre-written fallback',
+        })
+        .then((pr) => {
+          run.github = pr;
+        })
+        .catch((err) => {
+          console.error(`[github] open PR failed for ${req.params.id}: ${err.message}`);
+          run.githubError = err.message;
+        });
+    }
+    await run.githubPending;
+    if (run.github) prPayload.github = { ...run.github, repo: github.REPO };
+    else prPayload.github = { error: run.githubError };
+  }
+
   store.setStatus(req.params.id, store.STATUS.PR_READY, { pr: prPayload });
   res.json(prPayload);
 });
 
-app.post('/api/pipeline/:id/approve', (req, res) => {
+app.post('/api/pipeline/:id/approve', async (req, res) => {
   const ticket = tickets[req.params.id];
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
 
+  // If a real PR was opened, merging it is what "approve" means.
+  if (run.github?.number) {
+    try {
+      await github.mergePullRequest(run.github.number);
+    } catch (err) {
+      console.error(`[github] merge failed: ${err.message}`);
+      return res.status(502).json({ error: `Could not merge the pull request: ${err.message}` });
+    }
+  }
+
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   fs.writeFileSync(targetFile, run.winner.content);
 
   store.setStatus(req.params.id, store.STATUS.APPROVED, { approvedAt: Date.now() });
-  res.json({ merged: true, file: ticket.targetFile, winner: run.winner.id });
+  res.json({ merged: true, file: ticket.targetFile, winner: run.winner.id, pr: run.github || null });
 });
 
 // "Request changes" from the Approval screen. Kept in a plain array that
@@ -170,7 +221,7 @@ app.post('/api/pipeline/:id/approve', (req, res) => {
 // printed to the server log (visible in Render's Logs tab) as a second copy.
 const feedbackLog = [];
 
-app.post('/api/pipeline/:id/request-changes', (req, res) => {
+app.post('/api/pipeline/:id/request-changes', async (req, res) => {
   const ticket = tickets[req.params.id];
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   const text = String(req.body?.feedback || '').trim().slice(0, 2000);
@@ -185,7 +236,18 @@ app.post('/api/pipeline/:id/request-changes', (req, res) => {
   };
   feedbackLog.push(entry);
   console.log('[feedback]', JSON.stringify(entry));
-  res.json({ recorded: true });
+
+  // Also leave the feedback as a comment on the real PR, if there is one.
+  let commented = false;
+  if (github.enabled() && run?.github?.number) {
+    try {
+      await github.commentOnPullRequest(run.github.number, `**Changes requested by reviewer**\n\n${text}`);
+      commented = true;
+    } catch (err) {
+      console.error(`[github] comment failed: ${err.message}`);
+    }
+  }
+  res.json({ recorded: true, commented });
 });
 
 app.get('/api/feedback', (req, res) => res.json(feedbackLog));

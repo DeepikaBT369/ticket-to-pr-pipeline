@@ -292,6 +292,7 @@ interface PrResponse {
   diff: { filePath: string; added: number; removed: number; lines: DiffLine[] }
   explanation: string
   commitMessage: string
+  github?: { number?: number; url?: string; branch?: string; repo?: string; error?: string }
 }
 
 function PRAgentStage({ ticketId }: { ticketId: string }) {
@@ -312,6 +313,21 @@ function PRAgentStage({ ticketId }: { ticketId: string }) {
 
   return (
     <div className="fade-in space-y-6">
+      {data.github?.url && (
+        <a
+          href={data.github.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-3 text-sm text-[#5eead4] hover:bg-[#10362c] transition-colors"
+        >
+          Pull request #{data.github.number} opened on GitHub ({data.github.repo}) → view it
+        </a>
+      )}
+      {data.github?.error && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          Could not open a GitHub pull request: {data.github.error}
+        </div>
+      )}
       <div>
         <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Code Diff</p>
         <div className="rounded-xl border border-[#1e3048] overflow-hidden">
@@ -380,7 +396,11 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
   const handleApprove = async () => {
     setDecision('approving')
     try {
-      await fetch(`/api/pipeline/${ticketId}/approve`, { method: 'POST' })
+      const res = await fetch(`/api/pipeline/${ticketId}/approve`, { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Approve failed')
+      }
       setDecision('approved')
       setTimeout(onApprove, 600)
     } catch (err: any) {
@@ -454,7 +474,7 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
         {decision === 'approved' && (
           <div className="text-center space-y-3">
             <div className="w-14 h-14 rounded-full bg-[#0d2a22] border-2 border-[#5eead4] flex items-center justify-center mx-auto text-2xl">✓</div>
-            <p className="text-[#5eead4] font-semibold">Approved — merged to disk.</p>
+            <p className="text-[#5eead4] font-semibold">Approved — pull request merged.</p>
           </div>
         )}
         {decision === 'sent' && (

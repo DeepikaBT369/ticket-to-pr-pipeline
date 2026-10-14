@@ -165,6 +165,31 @@ app.post('/api/pipeline/:id/approve', (req, res) => {
   res.json({ merged: true, file: ticket.targetFile, winner: run.winner.id });
 });
 
+// "Request changes" from the Approval screen. Kept in a plain array that
+// Reset does NOT clear, so rejection reasons from every tester survive. Also
+// printed to the server log (visible in Render's Logs tab) as a second copy.
+const feedbackLog = [];
+
+app.post('/api/pipeline/:id/request-changes', (req, res) => {
+  const ticket = tickets[req.params.id];
+  if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+  const text = String(req.body?.feedback || '').trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ error: 'feedback is empty' });
+
+  const run = store.get(req.params.id);
+  const entry = {
+    ticketId: req.params.id,
+    candidateId: run?.winner?.id || null,
+    feedback: text,
+    at: new Date().toISOString(),
+  };
+  feedbackLog.push(entry);
+  console.log('[feedback]', JSON.stringify(entry));
+  res.json({ recorded: true });
+});
+
+app.get('/api/feedback', (req, res) => res.json(feedbackLog));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Ticket-to-PR pipeline server running at http://localhost:${PORT}`);

@@ -354,7 +354,8 @@ function PRAgentStage({ ticketId }: { ticketId: string }) {
 }
 
 function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: () => void }) {
-  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes'>('none')
+  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'sent'>('none')
+  const [feedback, setFeedback] = useState('')
   const [info, setInfo] = useState<{ winnerId: string; coverage: number; testsPassed: number; testsTotal: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -385,6 +386,21 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
     } catch (err: any) {
       setError(err.message)
       setDecision('none')
+    }
+  }
+
+  const handleSubmitFeedback = async () => {
+    if (!feedback.trim()) return
+    try {
+      const res = await fetch(`/api/pipeline/${ticketId}/request-changes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback }),
+      })
+      if (!res.ok) throw new Error('Could not save feedback')
+      setDecision('sent')
+    } catch (err: any) {
+      setError(err.message)
     }
   }
 
@@ -441,15 +457,26 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             <p className="text-[#5eead4] font-semibold">Approved — merged to disk.</p>
           </div>
         )}
+        {decision === 'sent' && (
+          <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8 text-center space-y-2">
+            <p className="text-[#5eead4] font-semibold">Feedback recorded</p>
+            <p className="text-sm text-[#7a87aa]">The fix was not applied. Your feedback has been saved for the engineering team.</p>
+          </div>
+        )}
         {decision === 'changes' && (
           <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8">
             <p className="text-[#c9d1ec] font-medium mb-3">Changes requested</p>
             <textarea
               className="w-full bg-[#0d1826] border border-[#1e3048] rounded-lg p-3 text-sm text-[#c9d1ec] font-sans resize-none h-28 focus:outline-none focus:border-[#5eead4] transition-colors"
-              placeholder="Describe the changes you want the agent to make…"
+              placeholder="What is wrong with this fix, or what should change?"
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
             />
             <div className="flex gap-3 mt-3">
-              <button className="bg-[#5eead4] text-[#0d1826] font-semibold text-sm py-2.5 px-5 rounded-lg hover:bg-[#7df0de] transition-colors">
+              <button
+                onClick={handleSubmitFeedback}
+                disabled={!feedback.trim()}
+                className="bg-[#5eead4] text-[#0d1826] font-semibold text-sm py-2.5 px-5 rounded-lg hover:bg-[#7df0de] transition-colors disabled:opacity-50">
                 Submit feedback
               </button>
               <button

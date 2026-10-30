@@ -14,8 +14,8 @@ const STAGES: Stage[] = [
   { id: 1, label: 'Locator', shortLabel: 'Locator' },
   { id: 2, label: 'Fixer', shortLabel: 'Fixer' },
   { id: 3, label: 'Gate', shortLabel: 'Gate' },
-  { id: 4, label: 'PR Agent', shortLabel: 'PR Agent' },
-  { id: 5, label: 'Approval', shortLabel: 'Approval' },
+  { id: 4, label: 'Approval', shortLabel: 'Approval' },
+  { id: 5, label: 'PR Agent', shortLabel: 'PR Agent' },
   { id: 6, label: 'Cost & Ablation', shortLabel: 'Cost' },
 ]
 
@@ -127,6 +127,9 @@ interface FixCandidate {
   coverage: number
   passed: number
   total: number
+  changedLines?: number
+  tradeoffs?: string
+  risks?: string
   tests: { name: string; pass: boolean }[]
 }
 
@@ -137,12 +140,15 @@ interface FixMeta {
   outputTokens?: number | null
   ms?: number
   reason?: string
+  revision?: number
 }
 
 interface FixResponse {
   candidates: FixCandidate[]
   winnerId: string
   meta?: FixMeta
+  rootCause?: string
+  selection?: { rule: string; reason: string }
 }
 
 function FixerStage({ ticketId }: { ticketId: string }) {
@@ -164,8 +170,13 @@ function FixerStage({ ticketId }: { ticketId: string }) {
   return (
     <div className="fade-in space-y-4">
       <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">
-        Candidate Fixes <span className="normal-case text-[#3a4a62]">(real pass rate from node --test)</span>
+        Candidate Fixes <span className="normal-case text-[#3a4a62]">(tests run for real with node --test; trade-offs and risks are the AI&apos;s own notes)</span>
       </p>
+      {(data.meta?.revision ?? 0) > 0 && (
+        <div className="rounded-lg border border-[#3a4a62] bg-[#0d1826] px-4 py-2 text-xs text-[#c9d1ec]">
+          Revised after reviewer feedback (revision {data.meta?.revision} of 2). Review these new candidates.
+        </div>
+      )}
       {data.meta?.source === 'llm' && (
         <div className="rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-2 text-xs text-[#5eead4]">
           Candidates written by AI ({data.meta.model}) in {((data.meta.ms ?? 0) / 1000).toFixed(1)}s
@@ -177,6 +188,18 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       {data.meta?.source === 'fallback' && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
           AI unavailable, showing pre-written candidates instead ({data.meta.reason})
+        </div>
+      )}
+      {data.rootCause && (
+        <div className="rounded-xl border border-[#1e3048] bg-[#0d1826] p-4">
+          <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-2 font-medium">Root cause <span className="normal-case text-[#3a4a62]">(written by the AI)</span></p>
+          <p className="text-sm text-[#c9d1ec] leading-relaxed">{data.rootCause}</p>
+        </div>
+      )}
+      {data.selection && (
+        <div className="rounded-xl border border-[#2d7a6e] bg-[#0d2a22] p-4">
+          <p className="text-xs uppercase tracking-widest text-[#5eead4] mb-2 font-medium">Why {data.winnerId} is recommended <span className="normal-case text-[#7a87aa]">(from measured results, not the AI&apos;s opinion)</span></p>
+          <p className="text-sm text-[#c9d1ec] leading-relaxed">{data.selection.reason}</p>
         </div>
       )}
       {data.candidates.map((c) => {
@@ -194,9 +217,16 @@ function FixerStage({ ticketId }: { ticketId: string }) {
               </div>
               <div className="text-right shrink-0">
                 <div className={`text-lg font-bold font-mono ${allPass ? 'text-[#5eead4]' : c.coverage >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{c.coverage}%</div>
-                <div className="text-xs text-[#7a87aa]">coverage</div>
+                <div className="text-xs text-[#7a87aa]">tests passing</div>
+                {c.changedLines != null && <div className="text-xs text-[#7a87aa] mt-0.5">{c.changedLines} lines changed</div>}
               </div>
             </div>
+            {(c.tradeoffs || c.risks) && (
+              <div className="mb-3 space-y-1 text-xs leading-relaxed">
+                {c.tradeoffs && <p className="text-[#c9d1ec]"><span className="text-[#7a87aa]">Trade-offs (AI): </span>{c.tradeoffs}</p>}
+                {c.risks && <p className="text-[#c9d1ec]"><span className="text-[#7a87aa]">Risks (AI): </span>{c.risks}</p>}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {c.tests.map((t) => (
                 <span key={t.name} className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-mono ${t.pass ? 'bg-[#0d2a22] border-[#2d7a6e] text-[#5eead4]' : 'bg-[#2a0d0d] border-[#7a2a2a] text-[#f87171]'}`}>
@@ -292,42 +322,12 @@ interface PrResponse {
   diff: { filePath: string; added: number; removed: number; lines: DiffLine[] }
   explanation: string
   commitMessage: string
-  github?: { number?: number; url?: string; branch?: string; repo?: string; error?: string }
+  github?: { number?: number; url?: string; branch?: string; repo?: string; merged?: boolean; mergeError?: string; error?: string }
 }
 
-function PRAgentStage({ ticketId }: { ticketId: string }) {
-  const [data, setData] = useState<PrResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    setData(null)
-    setError(null)
-    fetch(`/api/pipeline/${ticketId}/pr`)
-      .then((res) => res.json())
-      .then(setData)
-      .catch((err) => setError(err.message))
-  }, [ticketId])
-
-  if (error) return <ErrorPanel message={error} />
-  if (!data) return <LoadingPanel />
-
+function ReviewView({ data }: { data: PrResponse }) {
   return (
-    <div className="fade-in space-y-6">
-      {data.github?.url && (
-        <a
-          href={data.github.url}
-          target="_blank"
-          rel="noreferrer"
-          className="block rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-3 text-sm text-[#5eead4] hover:bg-[#10362c] transition-colors"
-        >
-          Pull request #{data.github.number} opened on GitHub ({data.github.repo}) → view it
-        </a>
-      )}
-      {data.github?.error && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
-          Could not open a GitHub pull request: {data.github.error}
-        </div>
-      )}
+    <div className="space-y-6">
       <div>
         <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Code Diff</p>
         <div className="rounded-xl border border-[#1e3048] overflow-hidden">
@@ -369,15 +369,65 @@ function PRAgentStage({ ticketId }: { ticketId: string }) {
   )
 }
 
-function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: () => void }) {
-  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'sent'>('none')
+function PRAgentStage({ ticketId }: { ticketId: string }) {
+  const [data, setData] = useState<PrResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setData(null)
+    setError(null)
+    fetch(`/api/pipeline/${ticketId}/pr`)
+      .then(async (res) => {
+        const body = await res.json()
+        if (!res.ok) throw new Error(body.error || 'Could not open the pull request')
+        return body
+      })
+      .then(setData)
+      .catch((err) => setError(err.message))
+  }, [ticketId])
+
+  if (error) return <ErrorPanel message={error} />
+  if (!data) return <LoadingPanel />
+
+  return (
+    <div className="fade-in space-y-6">
+      {data.github?.url && (
+        <a
+          href={data.github.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-3 text-sm text-[#5eead4] hover:bg-[#10362c] transition-colors"
+        >
+          Pull request #{data.github.number} opened on GitHub ({data.github.repo}){data.github.merged ? ' and merged' : ''} → view it
+        </a>
+      )}
+      {data.github?.mergeError && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          The pull request was opened but could not be merged: {data.github.mergeError}. Resolve it on GitHub.
+        </div>
+      )}
+      {data.github?.error && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          Could not open a GitHub pull request: {data.github.error}
+        </div>
+      )}
+      <ReviewView data={data} />
+    </div>
+  )
+}
+
+function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; onApprove: () => void; onRevised: () => void }) {
+  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'revising' | 'sent'>('none')
+  const [sentMessage, setSentMessage] = useState('')
   const [feedback, setFeedback] = useState('')
-  const [info, setInfo] = useState<{ winnerId: string; coverage: number; testsPassed: number; testsTotal: number } | null>(null)
+  const [info, setInfo] = useState<{ winnerId: string; coverage: number; testsPassed: number; testsTotal: number; gatePassed: boolean } | null>(null)
+  const [review, setReview] = useState<PrResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setDecision('none')
     setInfo(null)
+    setReview(null)
     setError(null)
     ;(async () => {
       try {
@@ -386,7 +436,15 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
           fetch(`/api/pipeline/${ticketId}/gate`).then((r) => r.json()) as Promise<GateResponse>,
         ])
         const winner = fix.candidates.find((c) => c.id === fix.winnerId)!
-        setInfo({ winnerId: winner.id, coverage: winner.coverage, testsPassed: gate.tests.passed, testsTotal: gate.tests.total })
+        const rev = await fetch(`/api/pipeline/${ticketId}/review`).then((r) => r.json()) as PrResponse
+        setReview(rev)
+        setInfo({
+          winnerId: winner.id,
+          coverage: winner.coverage,
+          testsPassed: gate.tests.passed,
+          testsTotal: gate.tests.total,
+          gatePassed: gate.syntax.ok && gate.tests.ok && gate.staticScan.ok,
+        })
       } catch (err: any) {
         setError(err.message)
       }
@@ -411,13 +469,21 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
 
   const handleSubmitFeedback = async () => {
     if (!feedback.trim()) return
+    setDecision('revising')
     try {
       const res = await fetch(`/api/pipeline/${ticketId}/request-changes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feedback }),
       })
-      if (!res.ok) throw new Error('Could not save feedback')
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || 'Could not save feedback')
+      if (body.revised) {
+        setFeedback('')
+        onRevised()
+        return
+      }
+      setSentMessage(body.message || 'Feedback saved.')
       setDecision('sent')
     } catch (err: any) {
       setError(err.message)
@@ -427,7 +493,9 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
   if (error) return <ErrorPanel message={error} />
 
   return (
-    <div className="fade-in flex items-center justify-center min-h-[320px]">
+    <div className="fade-in space-y-8">
+      {review && decision !== 'approved' && decision !== 'sent' && <ReviewView data={review} />}
+      <div className="flex items-center justify-center min-h-[320px]">
       <div className="w-full max-w-lg">
         {(decision === 'none' || decision === 'approving') && (
           <div className="rounded-2xl border-2 border-[#2d7a6e] bg-[#0d2a22] p-8 shadow-[0_0_40px_rgba(94,234,212,0.08)]">
@@ -446,9 +514,14 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             </div>
             {info ? (
               <div className="space-y-3 mb-6 text-sm text-[#7a87aa]">
-                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.winnerId} selected ({info.coverage}% test coverage)</div>
-                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> Gate: {info.testsPassed}/{info.testsTotal} tests passed</div>
-                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> Diff reviewed by PR Agent</div>
+                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.winnerId} recommended ({info.coverage}% of its tests pass)</div>
+                <div className="flex items-center gap-2">
+                  <span className={info.gatePassed ? 'text-[#5eead4]' : 'text-[#f87171]'}>{info.gatePassed ? '✓' : '✗'}</span>
+                  Gate: {info.testsPassed}/{info.testsTotal} tests passed{info.gatePassed ? '' : ', checks failed'}
+                </div>
+                {review && (
+                  <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> Change: +{review.diff.added} −{review.diff.removed} lines in {review.diff.filePath}. Read the diff above before you decide.</div>
+                )}
               </div>
             ) : (
               <p className="text-sm text-[#7a87aa] mb-6">Loading review summary…</p>
@@ -456,10 +529,10 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             <div className="flex gap-3">
               <button
                 onClick={handleApprove}
-                disabled={decision === 'approving'}
+                disabled={decision === 'approving' || !info?.gatePassed}
                 className="flex-1 bg-[#5eead4] text-[#0d1826] font-semibold text-sm py-3 px-5 rounded-xl hover:bg-[#7df0de] transition-colors duration-150 disabled:opacity-60"
               >
-                {decision === 'approving' ? 'Merging…' : 'Approve and merge'}
+                {decision === 'approving' ? 'Approving…' : 'Approve fix'}
               </button>
               <button
                 onClick={() => setDecision('changes')}
@@ -474,13 +547,19 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
         {decision === 'approved' && (
           <div className="text-center space-y-3">
             <div className="w-14 h-14 rounded-full bg-[#0d2a22] border-2 border-[#5eead4] flex items-center justify-center mx-auto text-2xl">✓</div>
-            <p className="text-[#5eead4] font-semibold">Approved — pull request merged.</p>
+            <p className="text-[#5eead4] font-semibold">Approved. The PR Agent opens the pull request next.</p>
+          </div>
+        )}
+        {decision === 'revising' && (
+          <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8 text-center space-y-2">
+            <p className="text-[#5eead4] font-semibold">Asking the AI for a revised fix…</p>
+            <p className="text-sm text-[#7a87aa]">This can take up to a minute.</p>
           </div>
         )}
         {decision === 'sent' && (
           <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8 text-center space-y-2">
             <p className="text-[#5eead4] font-semibold">Feedback recorded</p>
-            <p className="text-sm text-[#7a87aa]">The fix was not applied. Your feedback has been saved for the engineering team.</p>
+            <p className="text-sm text-[#7a87aa]">The fix was not applied. {sentMessage}</p>
           </div>
         )}
         {decision === 'changes' && (
@@ -508,6 +587,7 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             </div>
           </div>
         )}
+      </div>
       </div>
     </div>
   )
@@ -889,6 +969,12 @@ export default function App() {
     }, 400)
   }, [activeStage])
 
+  // After "Request changes" produces new candidates, go back to the Fixer stage.
+  const handleRevised = useCallback(() => {
+    setActiveStage(2)
+    setViewingStage(2)
+  }, [])
+
   const stageLabel = STAGES.find((s) => s.id === viewingStage)?.label ?? ''
   const isViewingActive = viewingStage === activeStage
 
@@ -977,7 +1063,7 @@ export default function App() {
                 </p>
                 <h1 className="text-xl font-semibold text-[#c9d1ec]">{stageLabel}</h1>
               </div>
-              {isViewingActive && !loading && activeStage < STAGES.length && (
+              {isViewingActive && !loading && activeStage < STAGES.length && activeStage !== 4 && (
                 <button
                   onClick={handleContinue}
                   className="flex items-center gap-2 bg-[#5eead4] text-[#0d1826] font-semibold text-sm px-5 py-2.5 rounded-xl hover:bg-[#7df0de] transition-colors duration-150"
@@ -998,8 +1084,8 @@ export default function App() {
                   {viewingStage === 1 && <LocatorStage ticketId={ticketId} />}
                   {viewingStage === 2 && <FixerStage ticketId={ticketId} />}
                   {viewingStage === 3 && <GateStage ticketId={ticketId} />}
-                  {viewingStage === 4 && <PRAgentStage ticketId={ticketId} />}
-                  {viewingStage === 5 && <ApprovalStage ticketId={ticketId} onApprove={handleContinue} />}
+                  {viewingStage === 4 && <ApprovalStage ticketId={ticketId} onApprove={handleContinue} onRevised={handleRevised} />}
+                  {viewingStage === 5 && <PRAgentStage ticketId={ticketId} />}
                   {viewingStage === 6 && <CostStage />}
                 </>
               )}

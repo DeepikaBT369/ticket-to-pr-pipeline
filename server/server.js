@@ -84,6 +84,44 @@ app.get('/api/pipeline/:id/locate', (req, res) => {
   });
 });
 
+// Picks the recommended candidate from measured facts only:
+//   1. most tests passing (pass rate);
+//   2. if that ties, the smallest change (fewest added + removed lines);
+//   3. if that also ties, the first one, and the text says so.
+// The returned `reason` is plain text shown to the reviewer.
+function chooseWinner(cs) {
+  const bestRate = Math.max(...cs.map((c) => c.coverage));
+  const top = cs.filter((c) => c.coverage === bestRate);
+  const allEqualRate = top.length === cs.length;
+  const minLines = Math.min(...top.map((c) => c.changedLines));
+  const smallest = top.filter((c) => c.changedLines === minLines);
+  const winner = smallest[0];
+  const others = cs.filter((c) => c.id !== winner.id);
+
+  let reason;
+  if (top.length === 1) {
+    reason =
+      `${winner.id} was recommended because it passed more tests (${winner.passed}/${winner.total}) than ` +
+      `${others.map((c) => `${c.id} (${c.passed}/${c.total})`).join(' and ')}.`;
+  } else if (smallest.length === 1) {
+    reason =
+      `${allEqualRate ? 'All candidates' : top.map((c) => c.id).join(' and ')} passed ${winner.passed}/${winner.total} tests, ` +
+      `so the tests alone could not separate them. ${winner.id} was recommended because it changes the fewest lines ` +
+      `(${winner.changedLines}, compared with ${top.filter((c) => c.id !== winner.id).map((c) => `${c.id}: ${c.changedLines}`).join(', ')}). ` +
+      `A smaller change is easier to review, but it may also cover fewer edge cases. Read the trade-offs before you decide.`;
+  } else {
+    reason =
+      `${top.map((c) => c.id).join(', ')} all passed ${winner.passed}/${winner.total} tests and changed ${winner.changedLines} lines, ` +
+      `so nothing measured separates them. ${winner.id} is listed first, not because it is better. Choose using the trade-offs below.`;
+  }
+  const selection = {
+    rule: top.length === 1 ? 'tests' : smallest.length === 1 ? 'tests, then smallest change' : 'tie',
+    reason,
+    ranking: cs.map((c) => ({ id: c.id, passed: c.passed, total: c.total, changedLines: c.changedLines })),
+  };
+  return { winner, selection };
+}
+
 app.get('/api/pipeline/:id/fix', async (req, res) => {
   const ticket = tickets[req.params.id];
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
@@ -92,7 +130,13 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
   // different numbers. Show what was decided at the time instead.
   const done = store.get(req.params.id);
   if (done?.status === store.STATUS.APPROVED && done.candidates && done.winner) {
-    return res.json({ candidates: done.candidates, winnerId: done.winner.id, meta: done.generated?.meta });
+    return res.json({
+      candidates: done.candidates,
+      winnerId: done.winner.id,
+      meta: done.generated?.meta,
+      selection: done.selection,
+      rootCause: done.rootCause || '',
+    });
   }
 
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
@@ -127,6 +171,8 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
       id: c.id,
       title: c.title,
       description: c.description,
+      tradeoffs: c.tradeoffs || '',
+      risks: c.risks || '',
       coverage,
       passed: r.passed,
       total: r.total,
@@ -135,13 +181,16 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
     };
   });
 
-  const winner = candidateResults.reduce(
-    (best, c) => (c.coverage > best.coverage ? c : best),
-    candidateResults[0]
-  );
+  const originalContent = fs.readFileSync(targetFile, 'utf8');
+  candidateResults.forEach((c) => {
+    const d = buildDiff(originalContent, c.content, ticket.targetFile);
+    c.changedLines = d.added + d.removed;
+  });
+  const { winner, selection } = chooseWinner(candidateResults);
 
-  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner });
-  res.json({ candidates: candidateResults, winnerId: winner.id, meta });
+  const rootCause = run.generated.rootCause || '';
+  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner, selection, rootCause });
+  res.json({ candidates: candidateResults, winnerId: winner.id, meta, selection, rootCause });
 });
 
 app.get('/api/pipeline/:id/gate', (req, res) => {
@@ -171,7 +220,7 @@ function buildReview(id, ticket, run) {
   const original = fs.readFileSync(targetFile, 'utf8');
   run.review = {
     diff: buildDiff(original, run.winner.content, ticket.targetFile),
-    explanation: explanation(run.winner),
+    explanation: explanation(run.winner, run.selection),
     commitMessage: commitMessage(id, run.winner),
   };
   return run.review;

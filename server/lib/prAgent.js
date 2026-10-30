@@ -23,12 +23,18 @@ function buildDiff(originalContent, newContent, filePath) {
   return { filePath, added, removed, lines };
 }
 
-function explanation(candidate) {
-  return (
-    `The fixer ran all candidates against the real test suite and selected ${candidate.id} ` +
-    `— "${candidate.title}" — because it passed the most tests (${candidate.passed}/${candidate.total}). ` +
-    `${candidate.description}`
-  );
+// The reason shown to the reviewer is built from measured facts (test results
+// and size of the change), never from the model's own opinion of its fix.
+// `selection` comes from chooseWinner() in server.js.
+function explanation(candidate, selection) {
+  const parts = [];
+  if (selection) {
+    parts.push(selection.reason);
+  } else {
+    parts.push(`${candidate.id} (${candidate.title}) was recommended.`);
+  }
+  if (candidate.description) parts.push(`What it does: ${candidate.description}`);
+  return parts.join(' ');
 }
 
 function commitMessage(ticketId, candidate) {

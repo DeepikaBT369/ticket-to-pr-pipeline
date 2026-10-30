@@ -127,6 +127,9 @@ interface FixCandidate {
   coverage: number
   passed: number
   total: number
+  changedLines?: number
+  tradeoffs?: string
+  risks?: string
   tests: { name: string; pass: boolean }[]
 }
 
@@ -143,6 +146,8 @@ interface FixResponse {
   candidates: FixCandidate[]
   winnerId: string
   meta?: FixMeta
+  rootCause?: string
+  selection?: { rule: string; reason: string }
 }
 
 function FixerStage({ ticketId }: { ticketId: string }) {
@@ -164,7 +169,7 @@ function FixerStage({ ticketId }: { ticketId: string }) {
   return (
     <div className="fade-in space-y-4">
       <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">
-        Candidate Fixes <span className="normal-case text-[#3a4a62]">(real pass rate from node --test)</span>
+        Candidate Fixes <span className="normal-case text-[#3a4a62]">(tests run for real with node --test; trade-offs and risks are the AI&apos;s own notes)</span>
       </p>
       {data.meta?.source === 'llm' && (
         <div className="rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-2 text-xs text-[#5eead4]">
@@ -177,6 +182,18 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       {data.meta?.source === 'fallback' && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
           AI unavailable, showing pre-written candidates instead ({data.meta.reason})
+        </div>
+      )}
+      {data.rootCause && (
+        <div className="rounded-xl border border-[#1e3048] bg-[#0d1826] p-4">
+          <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-2 font-medium">Root cause <span className="normal-case text-[#3a4a62]">(written by the AI)</span></p>
+          <p className="text-sm text-[#c9d1ec] leading-relaxed">{data.rootCause}</p>
+        </div>
+      )}
+      {data.selection && (
+        <div className="rounded-xl border border-[#2d7a6e] bg-[#0d2a22] p-4">
+          <p className="text-xs uppercase tracking-widest text-[#5eead4] mb-2 font-medium">Why {data.winnerId} is recommended <span className="normal-case text-[#7a87aa]">(from measured results, not the AI&apos;s opinion)</span></p>
+          <p className="text-sm text-[#c9d1ec] leading-relaxed">{data.selection.reason}</p>
         </div>
       )}
       {data.candidates.map((c) => {
@@ -194,9 +211,16 @@ function FixerStage({ ticketId }: { ticketId: string }) {
               </div>
               <div className="text-right shrink-0">
                 <div className={`text-lg font-bold font-mono ${allPass ? 'text-[#5eead4]' : c.coverage >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{c.coverage}%</div>
-                <div className="text-xs text-[#7a87aa]">coverage</div>
+                <div className="text-xs text-[#7a87aa]">tests passing</div>
+                {c.changedLines != null && <div className="text-xs text-[#7a87aa] mt-0.5">{c.changedLines} lines changed</div>}
               </div>
             </div>
+            {(c.tradeoffs || c.risks) && (
+              <div className="mb-3 space-y-1 text-xs leading-relaxed">
+                {c.tradeoffs && <p className="text-[#c9d1ec]"><span className="text-[#7a87aa]">Trade-offs (AI): </span>{c.tradeoffs}</p>}
+                {c.risks && <p className="text-[#c9d1ec]"><span className="text-[#7a87aa]">Risks (AI): </span>{c.risks}</p>}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {c.tests.map((t) => (
                 <span key={t.name} className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-mono ${t.pass ? 'bg-[#0d2a22] border-[#2d7a6e] text-[#5eead4]' : 'bg-[#2a0d0d] border-[#7a2a2a] text-[#f87171]'}`}>
@@ -475,7 +499,7 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             </div>
             {info ? (
               <div className="space-y-3 mb-6 text-sm text-[#7a87aa]">
-                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.winnerId} selected ({info.coverage}% of its tests pass)</div>
+                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.winnerId} recommended ({info.coverage}% of its tests pass)</div>
                 <div className="flex items-center gap-2">
                   <span className={info.gatePassed ? 'text-[#5eead4]' : 'text-[#f87171]'}>{info.gatePassed ? '✓' : '✗'}</span>
                   Gate: {info.testsPassed}/{info.testsTotal} tests passed{info.gatePassed ? '' : ', checks failed'}

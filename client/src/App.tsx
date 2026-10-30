@@ -140,6 +140,7 @@ interface FixMeta {
   outputTokens?: number | null
   ms?: number
   reason?: string
+  revision?: number
 }
 
 interface FixResponse {
@@ -171,6 +172,11 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">
         Candidate Fixes <span className="normal-case text-[#3a4a62]">(tests run for real with node --test; trade-offs and risks are the AI&apos;s own notes)</span>
       </p>
+      {(data.meta?.revision ?? 0) > 0 && (
+        <div className="rounded-lg border border-[#3a4a62] bg-[#0d1826] px-4 py-2 text-xs text-[#c9d1ec]">
+          Revised after reviewer feedback (revision {data.meta?.revision} of 2). Review these new candidates.
+        </div>
+      )}
       {data.meta?.source === 'llm' && (
         <div className="rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-2 text-xs text-[#5eead4]">
           Candidates written by AI ({data.meta.model}) in {((data.meta.ms ?? 0) / 1000).toFixed(1)}s
@@ -410,8 +416,9 @@ function PRAgentStage({ ticketId }: { ticketId: string }) {
   )
 }
 
-function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: () => void }) {
-  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'sent'>('none')
+function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; onApprove: () => void; onRevised: () => void }) {
+  const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'revising' | 'sent'>('none')
+  const [sentMessage, setSentMessage] = useState('')
   const [feedback, setFeedback] = useState('')
   const [info, setInfo] = useState<{ winnerId: string; coverage: number; testsPassed: number; testsTotal: number; gatePassed: boolean } | null>(null)
   const [review, setReview] = useState<PrResponse | null>(null)
@@ -462,13 +469,21 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
 
   const handleSubmitFeedback = async () => {
     if (!feedback.trim()) return
+    setDecision('revising')
     try {
       const res = await fetch(`/api/pipeline/${ticketId}/request-changes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feedback }),
       })
-      if (!res.ok) throw new Error('Could not save feedback')
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || 'Could not save feedback')
+      if (body.revised) {
+        setFeedback('')
+        onRevised()
+        return
+      }
+      setSentMessage(body.message || 'Feedback saved.')
       setDecision('sent')
     } catch (err: any) {
       setError(err.message)
@@ -535,10 +550,16 @@ function ApprovalStage({ ticketId, onApprove }: { ticketId: string; onApprove: (
             <p className="text-[#5eead4] font-semibold">Approved. The PR Agent opens the pull request next.</p>
           </div>
         )}
+        {decision === 'revising' && (
+          <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8 text-center space-y-2">
+            <p className="text-[#5eead4] font-semibold">Asking the AI for a revised fix…</p>
+            <p className="text-sm text-[#7a87aa]">This can take up to a minute.</p>
+          </div>
+        )}
         {decision === 'sent' && (
           <div className="rounded-2xl border border-[#1e3048] bg-[#162035] p-8 text-center space-y-2">
             <p className="text-[#5eead4] font-semibold">Feedback recorded</p>
-            <p className="text-sm text-[#7a87aa]">The fix was not applied. Your feedback has been saved for the engineering team.</p>
+            <p className="text-sm text-[#7a87aa]">The fix was not applied. {sentMessage}</p>
           </div>
         )}
         {decision === 'changes' && (
@@ -948,6 +969,12 @@ export default function App() {
     }, 400)
   }, [activeStage])
 
+  // After "Request changes" produces new candidates, go back to the Fixer stage.
+  const handleRevised = useCallback(() => {
+    setActiveStage(2)
+    setViewingStage(2)
+  }, [])
+
   const stageLabel = STAGES.find((s) => s.id === viewingStage)?.label ?? ''
   const isViewingActive = viewingStage === activeStage
 
@@ -1057,7 +1084,7 @@ export default function App() {
                   {viewingStage === 1 && <LocatorStage ticketId={ticketId} />}
                   {viewingStage === 2 && <FixerStage ticketId={ticketId} />}
                   {viewingStage === 3 && <GateStage ticketId={ticketId} />}
-                  {viewingStage === 4 && <ApprovalStage ticketId={ticketId} onApprove={handleContinue} />}
+                  {viewingStage === 4 && <ApprovalStage ticketId={ticketId} onApprove={handleContinue} onRevised={handleRevised} />}
                   {viewingStage === 5 && <PRAgentStage ticketId={ticketId} />}
                   {viewingStage === 6 && <CostStage />}
                 </>

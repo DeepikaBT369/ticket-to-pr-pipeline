@@ -316,6 +316,8 @@ app.post('/api/pipeline/:id/approve', (req, res) => {
 // printed to the server log (visible in Render's Logs tab) as a second copy.
 const feedbackLog = [];
 
+const MAX_REVISIONS = 2;
+
 app.post('/api/pipeline/:id/request-changes', async (req, res) => {
   const ticket = tickets[req.params.id];
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
@@ -323,6 +325,9 @@ app.post('/api/pipeline/:id/request-changes', async (req, res) => {
   if (!text) return res.status(400).json({ error: 'feedback is empty' });
 
   const run = store.get(req.params.id);
+  if (run?.status === store.STATUS.APPROVED) {
+    return res.status(409).json({ error: 'This ticket is already approved.' });
+  }
   const entry = {
     ticketId: req.params.id,
     candidateId: run?.winner?.id || null,
@@ -332,17 +337,57 @@ app.post('/api/pipeline/:id/request-changes', async (req, res) => {
   feedbackLog.push(entry);
   console.log('[feedback]', JSON.stringify(entry));
 
-  // Also leave the feedback as a comment on the real PR, if there is one.
-  let commented = false;
-  if (github.enabled() && run?.github?.number) {
-    try {
-      await github.commentOnPullRequest(run.github.number, `**Changes requested by reviewer**\n\n${text}`);
-      commented = true;
-    } catch (err) {
-      console.error(`[github] comment failed: ${err.message}`);
-    }
+  // Ask the model for new candidates that address the feedback. Needs the
+  // real model: the pre-written fallback candidates cannot react to feedback.
+  const used = run?.revisions || 0;
+  if (!run?.winner) return res.json({ recorded: true, revised: false, message: 'Feedback saved.' });
+  if (used >= MAX_REVISIONS) {
+    return res.json({
+      recorded: true,
+      revised: false,
+      message: `Feedback saved. This ticket has already been revised ${MAX_REVISIONS} times, so no further automatic revision is made.`,
+    });
   }
-  res.json({ recorded: true, commented });
+  if (run.generated?.meta?.source !== 'llm') {
+    return res.json({
+      recorded: true,
+      revised: false,
+      message: 'Feedback saved. The AI was not available for this ticket, so no revised fix could be generated.',
+    });
+  }
+
+  try {
+    const generated = await generateCandidates(
+      ticket,
+      fs.readFileSync(path.join(REPO_ROOT, ticket.targetFile), 'utf8'),
+      fs.readFileSync(path.join(REPO_ROOT, ticket.testFile), 'utf8'),
+      {
+        feedback: text,
+        number: used + 1,
+        rejected: { id: run.winner.id, title: run.winner.title, content: run.winner.content },
+      }
+    );
+    // Back to the Fixer stage with fresh candidates; the old gate, diff and
+    // winner no longer apply.
+    store.setStatus(req.params.id, store.STATUS.LOCATED, {
+      generated,
+      revisions: used + 1,
+      candidates: undefined,
+      winner: undefined,
+      selection: undefined,
+      rootCause: undefined,
+      gate: undefined,
+      review: undefined,
+    });
+    res.json({ recorded: true, revised: true, revision: used + 1, maxRevisions: MAX_REVISIONS });
+  } catch (err) {
+    console.error(`[fixer] revision failed for ${req.params.id}: ${err.message}`);
+    res.json({
+      recorded: true,
+      revised: false,
+      message: `Feedback saved, but a revised fix could not be generated (${err.message}).`,
+    });
+  }
 });
 
 app.get('/api/feedback', (req, res) => res.json(feedbackLog));

@@ -162,75 +162,104 @@ app.get('/api/pipeline/:id/gate', (req, res) => {
   res.json(gateResults);
 });
 
+// What the reviewer sees BEFORE deciding: the real diff, the explanation and
+// the commit message. Nothing is sent to GitHub here. The result is stored so
+// the PR Agent opens exactly what the human reviewed.
+function buildReview(id, ticket, run) {
+  if (run.review) return run.review;
+  const targetFile = path.join(REPO_ROOT, ticket.targetFile);
+  const original = fs.readFileSync(targetFile, 'utf8');
+  run.review = {
+    diff: buildDiff(original, run.winner.content, ticket.targetFile),
+    explanation: explanation(run.winner),
+    commitMessage: commitMessage(id, run.winner),
+  };
+  return run.review;
+}
+
+app.get('/api/pipeline/:id/review', (req, res) => {
+  const ticket = tickets[req.params.id];
+  const run = store.get(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+  if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
+  res.json(buildReview(req.params.id, ticket, run));
+});
+
+// Stage 5 (PR Agent). Runs only AFTER a human has approved. This is the first
+// point where anything is created on GitHub: open the pull request, then merge
+// it. If GitHub refuses (for example a merge conflict), the error is shown and
+// nothing is forced.
 app.get('/api/pipeline/:id/pr', async (req, res) => {
   const ticket = tickets[req.params.id];
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
-  if (run.status === store.STATUS.APPROVED && run.pr) return res.json(run.pr);
+  if (run.status !== store.STATUS.APPROVED) {
+    return res.status(409).json({ error: 'A human must approve the fix before a pull request is opened.' });
+  }
+  if (run.pr) return res.json(run.pr);
 
-  const targetFile = path.join(REPO_ROOT, ticket.targetFile);
-  const original = fs.readFileSync(targetFile, 'utf8');
-  const diff = buildDiff(original, run.winner.content, ticket.targetFile);
-  const prPayload = {
-    diff,
-    explanation: explanation(run.winner),
-    commitMessage: commitMessage(req.params.id, run.winner),
-  };
+  const prPayload = { ...run.review };
 
-  // Open a real pull request on GitHub (once per run). The PR exists BEFORE
-  // the human decision, like a real review flow: Approve merges it, Request
-  // changes comments on it.
   if (github.enabled()) {
     if (!run.githubPending) {
-      run.githubPending = github
-        .openPullRequest({
-          ticketId: req.params.id,
-          ticket,
-          candidate: run.winner,
-          explanation: prPayload.explanation,
-          commitMessage: prPayload.commitMessage,
-          gate: run.gate,
-          source: run.generated?.meta?.source === 'llm' ? `AI (${run.generated.meta.model})` : 'pre-written fallback',
-        })
-        .then((pr) => {
-          run.github = pr;
-        })
-        .catch((err) => {
+      run.githubPending = (async () => {
+        try {
+          const pr = await github.openPullRequest({
+            ticketId: req.params.id,
+            ticket,
+            candidate: run.winner,
+            explanation: prPayload.explanation,
+            commitMessage: prPayload.commitMessage,
+            gate: run.gate,
+            source: run.generated?.meta?.source === 'llm' ? `AI (${run.generated.meta.model})` : 'pre-written fallback',
+          });
+          run.github = { ...pr, repo: github.REPO };
+          try {
+            await github.mergePullRequest(pr.number);
+            run.github.merged = true;
+          } catch (err) {
+            console.error(`[github] merge failed: ${err.message}`);
+            run.github.merged = false;
+            run.github.mergeError = err.message;
+          }
+        } catch (err) {
           console.error(`[github] open PR failed for ${req.params.id}: ${err.message}`);
-          run.githubError = err.message;
-        });
+          run.github = { error: err.message };
+        }
+      })();
     }
     await run.githubPending;
-    if (run.github) prPayload.github = { ...run.github, repo: github.REPO };
-    else prPayload.github = { error: run.githubError };
+    prPayload.github = run.github;
   }
 
-  store.setStatus(req.params.id, store.STATUS.PR_READY, { pr: prPayload });
+  // The run is frozen after approval, so store the PR result directly.
+  run.pr = prPayload;
   res.json(prPayload);
 });
 
-app.post('/api/pipeline/:id/approve', async (req, res) => {
+// "Approve" records the human decision only. It does not touch GitHub: the PR
+// Agent stage does that next. The Gate must have passed, and a ticket can only
+// be approved once.
+app.post('/api/pipeline/:id/approve', (req, res) => {
   const ticket = tickets[req.params.id];
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
-
-  // If a real PR was opened, merging it is what "approve" means.
-  if (run.github?.number) {
-    try {
-      await github.mergePullRequest(run.github.number);
-    } catch (err) {
-      console.error(`[github] merge failed: ${err.message}`);
-      return res.status(502).json({ error: `Could not merge the pull request: ${err.message}` });
-    }
+  if (run.status === store.STATUS.APPROVED) {
+    return res.status(409).json({ error: 'This ticket is already approved.' });
+  }
+  const g = run.gate;
+  if (!g || !g.syntax.ok || !g.tests.ok || !g.staticScan.ok) {
+    return res.status(409).json({ error: 'The Gate has not passed, so this cannot be approved.' });
   }
 
+  buildReview(req.params.id, ticket, run); // freeze the diff the reviewer saw
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   fs.writeFileSync(targetFile, run.winner.content);
 
   store.setStatus(req.params.id, store.STATUS.APPROVED, { approvedAt: Date.now() });
-  res.json({ merged: true, file: ticket.targetFile, winner: run.winner.id, pr: run.github || null });
+  res.json({ approved: true, file: ticket.targetFile, winner: run.winner.id });
 });
 
 // "Request changes" from the Approval screen. Kept in a plain array that

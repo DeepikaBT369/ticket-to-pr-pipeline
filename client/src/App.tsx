@@ -19,6 +19,14 @@ const STAGES: Stage[] = [
   { id: 6, label: 'Cost & Ablation', shortLabel: 'Cost' },
 ]
 
+// Reads a JSON response and turns a server error into a thrown Error, so the
+// stage shows the server's message instead of crashing on missing fields.
+async function checkJson(res: Response) {
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`)
+  return body
+}
+
 // ── Loading state ─────────────────────────────────────────────────────────────
 
 function LoadingPanel() {
@@ -41,8 +49,10 @@ function ErrorPanel({ message }: { message: string }) {
 // ── Stage content components (each fetches real data from the backend) ────────
 
 interface LocateResponse {
-  ticket: { id: string; title: string; description: string }
+  ticket: { id: string; title: string; description: string; source?: string; url?: string | null }
   files: { file: string; hits: number; relevant: boolean; matches: { line: number; text: string }[] }[]
+  resolution?: { targetFile: string; testFile: string; hits: number } | null
+  blocked?: string | null
 }
 
 function LocatorStage({ ticketId }: { ticketId: string }) {
@@ -55,7 +65,7 @@ function LocatorStage({ ticketId }: { ticketId: string }) {
     setError(null)
     setTyped('')
     fetch(`/api/pipeline/${ticketId}/locate`)
-      .then((res) => res.json())
+      .then(checkJson)
       .then(setData)
       .catch((err) => setError(err.message))
   }, [ticketId])
@@ -84,6 +94,19 @@ function LocatorStage({ ticketId }: { ticketId: string }) {
           <span className="inline-block w-0.5 h-4 bg-[#5eead4] ml-0.5 animate-pulse align-middle" />
         </div>
       </div>
+      {data.ticket.source === 'jira' && data.ticket.url && (
+        <a href={data.ticket.url} target="_blank" rel="noreferrer" className="block text-xs text-[#5eead4] hover:text-[#7df0de]">
+          Read from Jira: {data.ticket.id} → open in Jira
+        </a>
+      )}
+      {data.blocked && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">{data.blocked}</div>
+      )}
+      {data.resolution && (
+        <div className="rounded-lg border border-[#2d7a6e] bg-[#0d2a22] px-4 py-2 text-xs text-[#5eead4]">
+          The Locator chose {data.resolution.targetFile} ({data.resolution.hits} keyword hits) and will check fixes against {data.resolution.testFile}. If this looks like the wrong file, do not approve.
+        </div>
+      )}
       <div>
         <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">
           Files Searched <span className="normal-case text-[#3a4a62]">(real grep over target-repo/src)</span>
@@ -159,7 +182,7 @@ function FixerStage({ ticketId }: { ticketId: string }) {
     setData(null)
     setError(null)
     fetch(`/api/pipeline/${ticketId}/fix`)
-      .then((res) => res.json())
+      .then(checkJson)
       .then(setData)
       .catch((err) => setError(err.message))
   }, [ticketId])
@@ -255,7 +278,7 @@ function GateStage({ ticketId }: { ticketId: string }) {
     setData(null)
     setError(null)
     fetch(`/api/pipeline/${ticketId}/gate`)
-      .then((res) => res.json())
+      .then(checkJson)
       .then(setData)
       .catch((err) => setError(err.message))
   }, [ticketId])
@@ -675,6 +698,15 @@ interface TicketSummary {
   id: string
   title: string
   status: string
+  source?: string
+  url?: string | null
+}
+
+interface JiraStatus {
+  enabled: boolean
+  ok: boolean
+  count: number
+  error: string | null
 }
 
 interface StatsResponse {
@@ -775,6 +807,7 @@ function Gauge({ value, label, sub }: { value: number; label: string; sub: strin
 function Dashboard({ onOpenTicket }: { onOpenTicket: (id: string) => void }) {
   const [tickets, setTickets] = useState<TicketSummary[]>([])
   const [stats, setStats] = useState<StatsResponse | null>(null)
+  const [jiraStatus, setJiraStatus] = useState<JiraStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'queued' | 'inProgress' | 'solved'>('all')
 
@@ -782,10 +815,12 @@ function Dashboard({ onOpenTicket }: { onOpenTicket: (id: string) => void }) {
     Promise.all([
       fetch('/api/tickets').then((r) => r.json()) as Promise<TicketSummary[]>,
       fetch('/api/stats').then((r) => r.json()) as Promise<StatsResponse>,
+      fetch('/api/jira/status').then((r) => r.json()) as Promise<JiraStatus>,
     ])
-      .then(([t, s]) => {
+      .then(([t, s, j]) => {
         setTickets(t)
         setStats(s)
+        setJiraStatus(j)
       })
       .catch((err) => setError(err.message))
   }, [])
@@ -854,6 +889,15 @@ function Dashboard({ onOpenTicket }: { onOpenTicket: (id: string) => void }) {
           <p className="text-xs uppercase tracking-widest text-[#7a87aa] font-medium">
             Tickets <span className="normal-case text-[#3a4a62]">({filteredTickets.length} shown)</span>
           </p>
+          {jiraStatus && (
+            <span className={`text-[11px] ${jiraStatus.error ? 'text-amber-300' : 'text-[#7a87aa]'}`}>
+              {!jiraStatus.enabled
+                ? 'Jira: not connected'
+                : jiraStatus.error
+                  ? `Jira error: ${jiraStatus.error}`
+                  : `Jira: connected, ${jiraStatus.count} open issue${jiraStatus.count === 1 ? '' : 's'}`}
+            </span>
+          )}
           {filter !== 'all' && (
             <button onClick={() => setFilter('all')} className="text-xs text-[#5eead4] hover:text-[#7df0de]">
               Clear filter
@@ -871,6 +915,9 @@ function Dashboard({ onOpenTicket }: { onOpenTicket: (id: string) => void }) {
             >
               <div className="flex items-center gap-3 min-w-0">
                 <span className="text-xs font-mono text-[#7a87aa] shrink-0">{t.id}</span>
+                {t.source === 'jira' && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border border-[#2d7a6e] text-[#5eead4] shrink-0">Jira</span>
+                )}
                 <span className="text-sm text-[#c9d1ec] truncate">{t.title}</span>
               </div>
               <span

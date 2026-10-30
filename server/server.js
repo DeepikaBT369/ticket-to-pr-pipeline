@@ -10,6 +10,7 @@ const { buildDiff, explanation, commitMessage } = require('./lib/prAgent');
 const store = require('./lib/store');
 const { generateCandidates } = require('./lib/llm');
 const github = require('./lib/github');
+const jira = require('./lib/jira');
 
 const REPO_ROOT = path.join(__dirname, '..', 'target-repo');
 const app = express();
@@ -18,6 +19,53 @@ app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 
 const TICKET_IDS = Object.keys(tickets);
 store.seed(TICKET_IDS);
+
+// Tickets read from Jira (empty unless the JIRA_* environment variables are
+// set). They join the built-in demo tickets in the queue.
+const jiraTickets = {};
+let lastJiraList = null;
+
+async function refreshJira() {
+  const list = await jira.getTickets();
+  if (list === lastJiraList) return; // cached, nothing new
+  lastJiraList = list;
+  const seen = new Set();
+  list.forEach((t) => {
+    // Keep what the Locator already worked out for a ticket we have seen.
+    const prev = jiraTickets[t.id];
+    jiraTickets[t.id] = prev ? { ...t, targetFile: prev.targetFile, testFile: prev.testFile } : t;
+    seen.add(t.id);
+    store.ensure(t.id);
+  });
+  Object.keys(jiraTickets).forEach((id) => {
+    if (!seen.has(id)) delete jiraTickets[id];
+  });
+}
+
+const getTicket = (id) => tickets[id] || jiraTickets[id];
+const allIds = () => [...TICKET_IDS, ...Object.keys(jiraTickets)];
+
+// Make sure Jira tickets are loaded before any API route looks one up.
+app.use('/api', async (req, res, next) => {
+  try {
+    await refreshJira();
+  } catch (err) {
+    console.error(`[jira] refresh failed: ${err.message}`);
+  }
+  next();
+});
+
+// A Jira ticket does not say which file to fix. Take the most keyword-heavy
+// file that has a matching test file (tests/<name>.test.js). If there is none,
+// the Fixer cannot run, because it needs a test to check candidates against.
+function resolveTarget(files) {
+  const ranked = files.filter((f) => f.relevant).sort((a, b) => b.hits - a.hits);
+  for (const f of ranked) {
+    const testRel = `tests/${path.basename(f.file, '.js')}.test.js`;
+    if (fs.existsSync(path.join(REPO_ROOT, testRel))) return { targetFile: f.file, testFile: testRel, hits: f.hits };
+  }
+  return null;
+}
 
 // Remember each target file as it was at startup (with its bug). Approving a
 // fix overwrites the file on disk, so "Reset demo" uses this snapshot to put
@@ -32,7 +80,11 @@ app.post('/api/reset', async (req, res) => {
   Object.entries(originalFiles).forEach(([rel, content]) => {
     fs.writeFileSync(path.join(REPO_ROOT, rel), content);
   });
-  store.reset(TICKET_IDS);
+  store.reset(allIds());
+  Object.values(jiraTickets).forEach((t) => {
+    t.targetFile = null;
+    t.testFile = null;
+  });
 
   // Put the GitHub repo's main branch back to the buggy baseline too.
   let githubReset = null;
@@ -50,22 +102,23 @@ app.post('/api/reset', async (req, res) => {
 
 app.get('/api/tickets', (req, res) => {
   res.json(
-    TICKET_IDS.map((id) => ({
-      id,
-      title: tickets[id].title,
-      status: store.get(id).status,
-    }))
+    allIds().map((id) => {
+      const t = getTicket(id);
+      return { id, title: t.title, status: store.get(id).status, source: t.source || 'demo', url: t.url || null };
+    })
   );
 });
+
+app.get('/api/jira/status', (req, res) => res.json(jira.status()));
 
 // Aggregate counts for the dashboard: how many tickets are queued, actively
 // moving through the pipeline, or fully solved (approved).
 app.get('/api/stats', (req, res) => {
-  res.json(store.stats(TICKET_IDS));
+  res.json(store.stats(allIds()));
 });
 
 app.get('/api/pipeline/:id/locate', (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
 
   const done = store.get(req.params.id);
@@ -77,10 +130,25 @@ app.get('/api/pipeline/:id/locate', (req, res) => {
   }
 
   const files = locate(ticket, REPO_ROOT);
+  let resolution = null;
+  let blocked = null;
+  if (ticket.source === 'jira') {
+    resolution = resolveTarget(files);
+    if (resolution) {
+      ticket.targetFile = resolution.targetFile;
+      ticket.testFile = resolution.testFile;
+    } else {
+      ticket.targetFile = null;
+      ticket.testFile = null;
+      blocked = 'The Locator could not find a source file with a matching test for this ticket, so the Fixer cannot run on it yet.';
+    }
+  }
   store.setStatus(req.params.id, store.STATUS.LOCATED, { files });
   res.json({
-    ticket: { id: req.params.id, title: ticket.title, description: ticket.description },
+    ticket: { id: req.params.id, title: ticket.title, description: ticket.description, source: ticket.source || 'demo', url: ticket.url || null },
     files,
+    resolution,
+    blocked,
   });
 });
 
@@ -123,8 +191,11 @@ function chooseWinner(cs) {
 }
 
 app.get('/api/pipeline/:id/fix', async (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+  if (!ticket.targetFile || !ticket.testFile) {
+    return res.status(422).json({ error: 'The Locator has not found a source file with a matching test for this ticket, so the Fixer cannot run.' });
+  }
 
   // After approval the file on disk is already fixed, so re-running would give
   // different numbers. Show what was decided at the time instead.
@@ -156,6 +227,10 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
       );
     } catch (err) {
       console.error(`[fixer] LLM failed for ${req.params.id}: ${err.message}`);
+      if (!ticket.candidates) {
+        // Jira tickets have no pre-written fixes to fall back on.
+        return res.status(503).json({ error: `The AI could not be reached (${err.message}), and tickets from Jira have no pre-written fallback fixes.` });
+      }
       run.generated = {
         candidates: ticket.candidates,
         meta: { source: 'fallback', reason: err.message },
@@ -194,7 +269,7 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
 });
 
 app.get('/api/pipeline/:id/gate', (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
@@ -227,7 +302,7 @@ function buildReview(id, ticket, run) {
 }
 
 app.get('/api/pipeline/:id/review', (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
@@ -239,7 +314,7 @@ app.get('/api/pipeline/:id/review', (req, res) => {
 // it. If GitHub refuses (for example a merge conflict), the error is shown and
 // nothing is forced.
 app.get('/api/pipeline/:id/pr', async (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
@@ -291,7 +366,7 @@ app.get('/api/pipeline/:id/pr', async (req, res) => {
 // Agent stage does that next. The Gate must have passed, and a ticket can only
 // be approved once.
 app.post('/api/pipeline/:id/approve', (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   const run = store.get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   if (!run || !run.winner) return res.status(400).json({ error: 'run the fixer stage first' });
@@ -305,6 +380,7 @@ app.post('/api/pipeline/:id/approve', (req, res) => {
 
   buildReview(req.params.id, ticket, run); // freeze the diff the reviewer saw
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
+  if (!(ticket.targetFile in originalFiles)) originalFiles[ticket.targetFile] = fs.readFileSync(targetFile, 'utf8'); // so Reset can restore it
   fs.writeFileSync(targetFile, run.winner.content);
 
   store.setStatus(req.params.id, store.STATUS.APPROVED, { approvedAt: Date.now() });
@@ -319,7 +395,7 @@ const feedbackLog = [];
 const MAX_REVISIONS = 2;
 
 app.post('/api/pipeline/:id/request-changes', async (req, res) => {
-  const ticket = tickets[req.params.id];
+  const ticket = getTicket(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'ticket not found' });
   const text = String(req.body?.feedback || '').trim().slice(0, 2000);
   if (!text) return res.status(400).json({ error: 'feedback is empty' });

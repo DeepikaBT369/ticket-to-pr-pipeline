@@ -648,6 +648,8 @@ interface AblationResult {
   ranAt?: string
   model?: string
   tickets?: number
+  trials?: number
+  errors?: number
   rows: { n: number; resolved: number; total: number; avgDollars: number | null; avgTokens: number }[]
 }
 
@@ -782,7 +784,7 @@ function CostStage({ ticketId }: { ticketId: string }) {
               </tbody>
             </table>
             <p className="text-xs text-[#7a87aa] px-5 py-3">
-              Measured {ablation.ranAt ? new Date(ablation.ranAt).toLocaleDateString() : ''} on {ablation.tickets ?? '?'} tickets{ablation.model ? ` with ${ablation.model}` : ''}. Small sample: read as a trend, not a rate.
+              Measured {ablation.ranAt ? new Date(ablation.ranAt).toLocaleDateString() : ''} on {ablation.tickets ?? '?'} tickets × {ablation.trials ?? 1} run{(ablation.trials ?? 1) === 1 ? '' : 's'}{ablation.model ? ` with ${ablation.model}` : ''}. "Resolved" means the best candidate passed every test. Small sample: read as a trend, not a rate.{ablation.errors ? ` ${ablation.errors} call(s) failed and are left out.` : ''}
             </p>
           </div>
         ) : (

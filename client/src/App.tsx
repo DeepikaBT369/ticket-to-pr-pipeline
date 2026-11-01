@@ -55,7 +55,7 @@ interface LocateResponse {
   blocked?: string | null
 }
 
-function LocatorStage({ ticketId }: { ticketId: string }) {
+function LocatorStage({ ticketId, onBlocked }: { ticketId: string; onBlocked: (blocked: boolean) => void }) {
   const [data, setData] = useState<LocateResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
@@ -64,9 +64,13 @@ function LocatorStage({ ticketId }: { ticketId: string }) {
     setData(null)
     setError(null)
     setTyped('')
+    onBlocked(false)
     fetch(`/api/pipeline/${ticketId}/locate`)
       .then(checkJson)
-      .then(setData)
+      .then((d: LocateResponse) => {
+        setData(d)
+        onBlocked(Boolean(d.blocked))
+      })
       .catch((err) => setError(err.message))
   }, [ticketId])
 
@@ -616,77 +620,176 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
   )
 }
 
-function CostStage() {
-  // Illustrative — cost/ablation tracking across multiple tickets isn't wired
-  // up yet since only BUG-4821 is seeded. This stage stays static until more
-  // tickets exist to compute real numbers from.
-  const data = [
-    { n: 1, rate: 42, cost: 0.18 },
-    { n: 3, rate: 71, cost: 0.52 },
-    { n: 5, rate: 83, cost: 0.91 },
-    { n: 8, rate: 89, cost: 1.44 },
-    { n: 10, rate: 91, cost: 1.81 },
-    { n: 15, rate: 94, cost: 2.70 },
-    { n: 20, rate: 95, cost: 3.62 },
-  ]
+interface CostTotals {
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  ms: number
+  tokensMissing: boolean
+  dollars: number | null
+}
 
-  const maxRate = Math.max(...data.map((d) => d.rate))
+interface TicketCost {
+  pricing: { configured: boolean; inputPerMTok: number | null; outputPerMTok: number | null }
+  calls: { kind: string; model: string | null; inputTokens: number | null; outputTokens: number | null; ms: number }[]
+  totals: CostTotals
+  revisions: number
+  usedAI: boolean
+}
+
+interface CostSummary {
+  tickets: number
+  avgDollarsPerTicket: number | null
+  avgTokensPerTicket: number | null
+  totals: CostTotals
+}
+
+interface AblationResult {
+  ranAt?: string
+  model?: string
+  tickets?: number
+  rows: { n: number; resolved: number; total: number; avgDollars: number | null; avgTokens: number }[]
+}
+
+const fmtUsd = (v: number | null) => (v == null ? 'not set' : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`)
+const fmtNum = (v: number) => v.toLocaleString('en-US')
+
+function CostStage({ ticketId }: { ticketId: string }) {
+  const [ticket, setTicket] = useState<TicketCost | null>(null)
+  const [summary, setSummary] = useState<CostSummary | null>(null)
+  const [ablation, setAblation] = useState<AblationResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setError(null)
+    Promise.all([
+      fetch(`/api/pipeline/${ticketId}/cost`).then(checkJson),
+      fetch('/api/cost/summary').then(checkJson),
+      fetch('/api/ablation').then((r) => r.json()),
+    ])
+      .then(([t, s, a]) => {
+        setTicket(t)
+        setSummary(s)
+        setAblation(a && Array.isArray(a.rows) ? a : null)
+      })
+      .catch((err) => setError(err.message))
+  }, [ticketId])
+
+  if (error) return <ErrorPanel message={error} />
+  if (!ticket || !summary) return <LoadingPanel />
+
+  const t = ticket.totals
+  const priced = ticket.pricing.configured
 
   return (
     <div className="fade-in space-y-6">
-      <p className="text-xs text-[#3a4a62] italic">Illustrative — real across multiple tickets once more are seeded.</p>
-      <div className="grid grid-cols-3 gap-4">
-        {[
-          { label: 'Resolved tickets', value: '94%', sub: 'at N=15 (sweet spot)' },
-          { label: 'Cost per issue', value: '$2.70', sub: 'at N=15' },
-          { label: 'This ticket', value: '$0.91', sub: 'resolved at N=5' },
-        ].map((s) => (
-          <div key={s.label} className="bg-[#162035] border border-[#1e3048] rounded-xl p-4">
-            <p className="text-xs text-[#7a87aa] mb-1">{s.label}</p>
-            <p className="text-2xl font-bold text-[#5eead4] font-mono">{s.value}</p>
-            <p className="text-xs text-[#7a87aa] mt-1">{s.sub}</p>
-          </div>
-        ))}
-      </div>
+      {!ticket.usedAI && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          No AI call was made for this ticket in this server session (the pre-written candidates were used, or the server restarted), so there is no cost to show.
+        </div>
+      )}
+      {ticket.usedAI && !priced && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          Prices are not set, so dollars are blank. Set COST_INPUT_PER_MTOK and COST_OUTPUT_PER_MTOK on the server (US dollars per million tokens, from Anthropic&apos;s pricing page).
+        </div>
+      )}
+
       <div>
-        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Resolution Rate vs. Cost (by N candidates)</p>
+        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">This ticket ({ticketId})</p>
+        <div className="grid grid-cols-4 gap-4">
+          {[
+            { label: 'AI cost', value: fmtUsd(t.dollars), sub: priced ? 'measured tokens × your prices' : 'prices not set' },
+            { label: 'Tokens', value: fmtNum(t.inputTokens + t.outputTokens), sub: `${fmtNum(t.inputTokens)} in · ${fmtNum(t.outputTokens)} out` },
+            { label: 'AI calls', value: String(t.calls), sub: ticket.revisions ? `incl. ${ticket.revisions} revision${ticket.revisions === 1 ? '' : 's'}` : 'no revisions' },
+            { label: 'AI time', value: `${(t.ms / 1000).toFixed(1)}s`, sub: 'time waiting for the model' },
+          ].map((s) => (
+            <div key={s.label} className="bg-[#162035] border border-[#1e3048] rounded-xl p-4">
+              <p className="text-xs text-[#7a87aa] mb-1">{s.label}</p>
+              <p className="text-2xl font-bold text-[#5eead4] font-mono">{s.value}</p>
+              <p className="text-xs text-[#7a87aa] mt-1">{s.sub}</p>
+            </div>
+          ))}
+        </div>
+        {t.tokensMissing && <p className="text-xs text-amber-300 mt-2">The API did not report token counts for at least one call, so totals may be low.</p>}
+      </div>
+
+      {ticket.calls.length > 0 && (
         <div className="bg-[#162035] border border-[#1e3048] rounded-xl overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-[#1e3048]">
-                <th className="text-left px-5 py-3 text-xs text-[#7a87aa] font-medium uppercase tracking-wider">N</th>
-                <th className="text-left px-5 py-3 text-xs text-[#7a87aa] font-medium uppercase tracking-wider">Resolution Rate</th>
-                <th className="text-left px-5 py-3 text-xs text-[#7a87aa] font-medium uppercase tracking-wider">Avg Cost / Issue</th>
-                <th className="px-5 py-3 w-40"></th>
+              <tr className="border-b border-[#1e3048] text-xs text-[#7a87aa] uppercase tracking-wider">
+                <th className="text-left px-5 py-3 font-medium">Call</th>
+                <th className="text-left px-5 py-3 font-medium">Model</th>
+                <th className="text-right px-5 py-3 font-medium">In</th>
+                <th className="text-right px-5 py-3 font-medium">Out</th>
+                <th className="text-right px-5 py-3 font-medium">Time</th>
               </tr>
             </thead>
             <tbody>
-              {data.map((row) => {
-                const isOptimal = row.n === 15
-                return (
-                  <tr key={row.n} className={`border-b border-[#1e3048] last:border-0 ${isOptimal ? 'bg-[#0d2a22]' : ''}`}>
-                    <td className="px-5 py-3 font-mono text-[#c9d1ec] font-medium">{row.n}</td>
-                    <td className="px-5 py-3">
-                      <span className={`font-mono font-medium ${row.rate === maxRate ? 'text-[#5eead4]' : 'text-[#c9d1ec]'}`}>{row.rate}%</span>
-                    </td>
-                    <td className="px-5 py-3 font-mono text-[#c9d1ec]">${row.cost.toFixed(2)}</td>
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 bg-[#1e3048] rounded-full h-1.5">
-                          <div
-                            className="h-1.5 rounded-full bg-[#5eead4] transition-all duration-500"
-                            style={{ width: `${row.rate}%`, opacity: isOptimal ? 1 : 0.5 }}
-                          />
-                        </div>
-                        {isOptimal && <span className="text-xs text-[#5eead4] shrink-0">optimal</span>}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
+              {ticket.calls.map((c, i) => (
+                <tr key={i} className="border-b border-[#1e3048] last:border-0 text-[#c9d1ec]">
+                  <td className="px-5 py-2.5">{c.kind === 'revision' ? 'Revision' : 'First candidates'}</td>
+                  <td className="px-5 py-2.5 font-mono text-xs">{c.model ?? '—'}</td>
+                  <td className="px-5 py-2.5 text-right font-mono">{c.inputTokens == null ? '—' : fmtNum(c.inputTokens)}</td>
+                  <td className="px-5 py-2.5 text-right font-mono">{c.outputTokens == null ? '—' : fmtNum(c.outputTokens)}</td>
+                  <td className="px-5 py-2.5 text-right font-mono">{(c.ms / 1000).toFixed(1)}s</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      <div>
+        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Across all tickets run since the server started</p>
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { label: 'Tickets with AI calls', value: String(summary.tickets), sub: 'counted in the average' },
+            { label: 'Average cost per ticket', value: fmtUsd(summary.avgDollarsPerTicket), sub: summary.tickets ? 'includes revisions' : 'no data yet' },
+            { label: 'Average tokens per ticket', value: summary.avgTokensPerTicket == null ? '—' : fmtNum(summary.avgTokensPerTicket), sub: 'input + output' },
+          ].map((s) => (
+            <div key={s.label} className="bg-[#162035] border border-[#1e3048] rounded-xl p-4">
+              <p className="text-xs text-[#7a87aa] mb-1">{s.label}</p>
+              <p className="text-2xl font-bold text-[#c9d1ec] font-mono">{s.value}</p>
+              <p className="text-xs text-[#7a87aa] mt-1">{s.sub}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Ablation: how many candidates is worth the cost?</p>
+        {ablation ? (
+          <div className="bg-[#162035] border border-[#1e3048] rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[#1e3048] text-xs text-[#7a87aa] uppercase tracking-wider">
+                  <th className="text-left px-5 py-3 font-medium">Candidates (N)</th>
+                  <th className="text-left px-5 py-3 font-medium">Tickets resolved</th>
+                  <th className="text-left px-5 py-3 font-medium">Avg cost / ticket</th>
+                  <th className="text-left px-5 py-3 font-medium">Avg tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ablation.rows.map((r) => (
+                  <tr key={r.n} className="border-b border-[#1e3048] last:border-0 text-[#c9d1ec]">
+                    <td className="px-5 py-3 font-mono">{r.n}</td>
+                    <td className="px-5 py-3 font-mono">{r.resolved} of {r.total}</td>
+                    <td className="px-5 py-3 font-mono">{fmtUsd(r.avgDollars)}</td>
+                    <td className="px-5 py-3 font-mono">{fmtNum(r.avgTokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-[#7a87aa] px-5 py-3">
+              Measured {ablation.ranAt ? new Date(ablation.ranAt).toLocaleDateString() : ''} on {ablation.tickets ?? '?'} tickets{ablation.model ? ` with ${ablation.model}` : ''}. Small sample: read as a trend, not a rate.
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-[#7a87aa] bg-[#162035] border border-[#1e3048] rounded-xl p-4">
+            Not measured yet. Run the ablation script to fill this table with real numbers (no placeholder values are shown).
+          </p>
+        )}
       </div>
     </div>
   )
@@ -983,11 +1086,13 @@ export default function App() {
   const [activeStage, setActiveStage] = useState(1)
   const [viewingStage, setViewingStage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [locatorBlocked, setLocatorBlocked] = useState(false)
 
   const openTicket = (id: string) => {
     setTicketId(id)
     setActiveStage(1)
     setViewingStage(1)
+    setLocatorBlocked(false)
     setView('pipeline')
   }
 
@@ -1110,7 +1215,7 @@ export default function App() {
                 </p>
                 <h1 className="text-xl font-semibold text-[#c9d1ec]">{stageLabel}</h1>
               </div>
-              {isViewingActive && !loading && activeStage < STAGES.length && activeStage !== 4 && (
+              {isViewingActive && !loading && activeStage < STAGES.length && activeStage !== 4 && !(activeStage === 1 && locatorBlocked) && (
                 <button
                   onClick={handleContinue}
                   className="flex items-center gap-2 bg-[#5eead4] text-[#0d1826] font-semibold text-sm px-5 py-2.5 rounded-xl hover:bg-[#7df0de] transition-colors duration-150"
@@ -1128,12 +1233,12 @@ export default function App() {
                 <LoadingPanel />
               ) : (
                 <>
-                  {viewingStage === 1 && <LocatorStage ticketId={ticketId} />}
+                  {viewingStage === 1 && <LocatorStage ticketId={ticketId} onBlocked={setLocatorBlocked} />}
                   {viewingStage === 2 && <FixerStage ticketId={ticketId} />}
                   {viewingStage === 3 && <GateStage ticketId={ticketId} />}
                   {viewingStage === 4 && <ApprovalStage ticketId={ticketId} onApprove={handleContinue} onRevised={handleRevised} />}
                   {viewingStage === 5 && <PRAgentStage ticketId={ticketId} />}
-                  {viewingStage === 6 && <CostStage />}
+                  {viewingStage === 6 && <CostStage ticketId={ticketId} />}
                 </>
               )}
             </div>

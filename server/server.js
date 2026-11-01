@@ -11,6 +11,7 @@ const store = require('./lib/store');
 const { generateCandidates } = require('./lib/llm');
 const github = require('./lib/github');
 const jira = require('./lib/jira');
+const cost = require('./lib/cost');
 
 const REPO_ROOT = path.join(__dirname, '..', 'target-repo');
 const app = express();
@@ -113,6 +114,58 @@ app.get('/api/jira/status', (req, res) => res.json(jira.status()));
 
 // Aggregate counts for the dashboard: how many tickets are queued, actively
 // moving through the pipeline, or fully solved (approved).
+// One entry per AI call, kept on the run (and kept when a revision resets the
+// later stages). Used by the Cost stage.
+function logUsage(run, kind, meta) {
+  if (!meta || meta.source !== 'llm') return;
+  (run.usageLog ||= []).push({
+    kind,
+    model: meta.model || null,
+    inputTokens: meta.inputTokens ?? null,
+    outputTokens: meta.outputTokens ?? null,
+    ms: meta.ms ?? 0,
+    at: Date.now(),
+  });
+}
+
+app.get('/api/pipeline/:id/cost', (req, res) => {
+  const ticket = getTicket(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+  const run = store.get(req.params.id) || {};
+  const p = cost.pricing();
+  const log = run.usageLog || [];
+  res.json({
+    ticketId: req.params.id,
+    pricing: p,
+    calls: log,
+    totals: cost.summarize(log, p),
+    revisions: run.revisions || 0,
+    usedAI: log.length > 0,
+  });
+});
+
+// Across every ticket that has made at least one AI call since the server
+// started (the run store is in memory, so a restart or Reset clears it).
+app.get('/api/cost/summary', (req, res) => {
+  const p = cost.pricing();
+  const perTicket = allIds()
+    .map((id) => ({ id, log: store.get(id)?.usageLog || [] }))
+    .filter((t) => t.log.length > 0)
+    .map((t) => ({ id: t.id, ...cost.summarize(t.log, p) }));
+  const all = cost.summarize(perTicket.flatMap((t) => store.get(t.id).usageLog), p);
+  res.json({
+    pricing: p,
+    tickets: perTicket.length,
+    totals: all,
+    avgDollarsPerTicket: p.configured && perTicket.length ? all.dollars / perTicket.length : null,
+    avgTokensPerTicket: perTicket.length ? Math.round((all.inputTokens + all.outputTokens) / perTicket.length) : null,
+    perTicket,
+  });
+});
+
+// Ablation results (1, 2, 3 candidates), written by the ablation script.
+app.get('/api/ablation', (req, res) => res.json(cost.readAblation()));
+
 app.get('/api/stats', (req, res) => {
   res.json(store.stats(allIds()));
 });
@@ -176,11 +229,11 @@ function chooseWinner(cs) {
       `${allEqualRate ? 'All candidates' : top.map((c) => c.id).join(' and ')} passed ${winner.passed}/${winner.total} tests, ` +
       `so the tests alone could not separate them. ${winner.id} was recommended because it changes the fewest lines ` +
       `(${winner.changedLines}, compared with ${top.filter((c) => c.id !== winner.id).map((c) => `${c.id}: ${c.changedLines}`).join(', ')}). ` +
-      `A smaller change is easier to review, but it may also cover fewer edge cases. Read the trade-offs before you decide.`;
+      `A smaller change is easier to review, but it may also cover fewer edge cases.`;
   } else {
     reason =
       `${top.map((c) => c.id).join(', ')} all passed ${winner.passed}/${winner.total} tests and changed ${winner.changedLines} lines, ` +
-      `so nothing measured separates them. ${winner.id} is listed first, not because it is better. Choose using the trade-offs below.`;
+      `so nothing measured separates them. ${winner.id} is listed first, not because it is better.`;
   }
   const selection = {
     rule: top.length === 1 ? 'tests' : smallest.length === 1 ? 'tests, then smallest change' : 'tie',
@@ -225,6 +278,7 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
         fs.readFileSync(targetFile, 'utf8'),
         fs.readFileSync(testFile, 'utf8')
       );
+      logUsage(run, 'generate', run.generated.meta);
     } catch (err) {
       console.error(`[fixer] LLM failed for ${req.params.id}: ${err.message}`);
       if (!ticket.candidates) {
@@ -443,6 +497,7 @@ app.post('/api/pipeline/:id/request-changes', async (req, res) => {
         rejected: { id: run.winner.id, title: run.winner.title, content: run.winner.content },
       }
     );
+    logUsage(run, 'revision', generated.meta);
     // Back to the Fixer stage with fresh candidates; the old gate, diff and
     // winner no longer apply.
     store.setStatus(req.params.id, store.STATUS.LOCATED, {

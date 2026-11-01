@@ -1,0 +1,202 @@
+{
+  "ranAt": "2026-11-01T22:39:06.765Z",
+  "model": "claude-sonnet-5-5",
+  "tickets": 5,
+  "trials": 1,
+  "pricing": {
+    "configured": true,
+    "inputPerMTok": 2,
+    "outputPerMTok": 10
+  },
+  "errors": 0,
+  "rows": [
+    {
+      "n": 1,
+      "resolved": 5,
+      "total": 5,
+      "avgDollars": 0.0084228,
+      "avgTokens": 1731
+    },
+    {
+      "n": 2,
+      "resolved": 5,
+      "total": 5,
+      "avgDollars": 0.017740799999999998,
+      "avgTokens": 2699
+    },
+    {
+      "n": 3,
+      "resolved": 5,
+      "total": 5,
+      "avgDollars": 0.0225768,
+      "avgTokens": 3196
+    }
+  ],
+  "detail": [
+    {
+      "id": "BUG-4821",
+      "n": 1,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1480,
+      "outputTokens": 886,
+      "ms": 6483
+    },
+    {
+      "id": "BUG-4821",
+      "n": 2,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1525,
+      "outputTokens": 2580,
+      "ms": 17443
+    },
+    {
+      "id": "BUG-4821",
+      "n": 3,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1542,
+      "outputTokens": 3701,
+      "ms": 24623
+    },
+    {
+      "id": "BUG-4822",
+      "n": 1,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 999,
+      "outputTokens": 448,
+      "ms": 3901
+    },
+    {
+      "id": "BUG-4822",
+      "n": 2,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1044,
+      "outputTokens": 954,
+      "ms": 6904
+    },
+    {
+      "id": "BUG-4822",
+      "n": 3,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1061,
+      "outputTokens": 1233,
+      "ms": 8809
+    },
+    {
+      "id": "BUG-4823",
+      "n": 1,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1135,
+      "outputTokens": 563,
+      "ms": 4688
+    },
+    {
+      "id": "BUG-4823",
+      "n": 2,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1180,
+      "outputTokens": 1156,
+      "ms": 7611
+    },
+    {
+      "id": "BUG-4823",
+      "n": 3,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1197,
+      "outputTokens": 1659,
+      "ms": 10846
+    },
+    {
+      "id": "BUG-4824",
+      "n": 1,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 997,
+      "outputTokens": 714,
+      "ms": 5737
+    },
+    {
+      "id": "BUG-4824",
+      "n": 2,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1042,
+      "outputTokens": 1699,
+      "ms": 12318
+    },
+    {
+      "id": "BUG-4824",
+      "n": 3,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1059,
+      "outputTokens": 2209,
+      "ms": 16589
+    },
+    {
+      "id": "BUG-4825",
+      "n": 1,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 946,
+      "outputTokens": 489,
+      "ms": 4578
+    },
+    {
+      "id": "BUG-4825",
+      "n": 2,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 991,
+      "outputTokens": 1325,
+      "ms": 9044
+    },
+    {
+      "id": "BUG-4825",
+      "n": 3,
+      "trial": 1,
+      "resolved": true,
+      "bestPassed": 3,
+      "total": 3,
+      "inputTokens": 1008,
+      "outputTokens": 1313,
+      "ms": 9622
+    }
+  ]
+}

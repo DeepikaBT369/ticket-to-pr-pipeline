@@ -409,4 +409,62 @@ module.exports = {
       },
     ],
   },
+
+  // --- Larger practice repo (target-repo has ~45 files). These tickets name no
+  // file: the Locator has to find the right one among many. There are no
+  // pre-written fixes, so the AI must write them.
+  'BUG-4831': {
+    source: 'repo',
+    title: 'Customer can be refunded more than they paid: a second partial refund ignores earlier refunds.',
+    description:
+      "Steps to reproduce:\n1. Place an order for $100.00\n2. Refund $70.00\n3. Request another refund of $50.00\n\n" +
+      "Expected: only the remaining $30.00 is refunded, so total refunds never exceed the order total\n" +
+      "Actual: the full $50.00 is refunded, for $120.00 refunded on a $100.00 order",
+    keywords: ['refund', 'refunded', 'partial', 'remaining'],
+  },
+  'BUG-4832': {
+    source: 'repo',
+    title: 'A parcel weighing exactly 1 kg is charged the 1-5 kg shipping rate.',
+    description:
+      "Steps to reproduce:\n1. Add items weighing exactly 1.0 kg in total\n2. Go to shipping\n\n" +
+      "Expected: the lowest tier (up to and including 1 kg) applies\n" +
+      "Actual: the higher tier is charged. Same problem at exactly 5 kg.",
+    keywords: ['shipping', 'weight', 'kg', 'tier'],
+  },
+  'BUG-4833': {
+    source: 'repo',
+    title: 'Estimated delivery date can land on a Saturday or Sunday.',
+    description:
+      "Steps to reproduce:\n1. Order on a Friday with a 1 business day delivery estimate\n\n" +
+      "Expected: the estimate is the following Monday (deliveries are Monday to Friday)\n" +
+      "Actual: the estimate shows Saturday",
+    keywords: ['delivery', 'business', 'weekend', 'estimate'],
+  },
+  'BUG-4834': {
+    source: 'repo',
+    title: 'Coupon is rejected on its last valid day.',
+    description:
+      "Steps to reproduce:\n1. Create a coupon that expires on 2026-11-30\n2. Apply it at 6 pm UTC on 2026-11-30\n\n" +
+      "Expected: the coupon works for the whole expiry day\n" +
+      "Actual: it is reported as expired",
+    keywords: ['coupon', 'expires', 'expiry', 'valid'],
+  },
+  'BUG-4835': {
+    source: 'repo',
+    title: 'A valid password is rejected when its only digit is 9.',
+    description:
+      "Steps to reproduce:\n1. Sign up with the password Sunshine9\n\n" +
+      "Expected: accepted (8+ characters, one uppercase letter, one digit)\n" +
+      "Actual: rejected with 'a digit' missing",
+    keywords: ['password', 'digit', 'uppercase', 'characters'],
+  },
+  'BUG-4836': {
+    source: 'repo',
+    title: 'Shipping notification shows the raw {{name}} placeholder the second time it is used.',
+    description:
+      "Steps to reproduce:\n1. Ship an order for a customer called Ada\n2. Read the notification email\n\n" +
+      "Expected: 'Hi Ada, your order ORD-000001 has shipped. Thanks, Ada!'\n" +
+      "Actual: 'Hi Ada, ... Thanks, {{name}}!'",
+    keywords: ['placeholder', 'template', 'notification', 'email'],
+  },
 };

@@ -43,7 +43,7 @@ async function main() {
     process.exit(1);
   }
   const p = cost.pricing();
-  const ids = Object.keys(tickets);
+  const ids = Object.keys(tickets).filter((id) => tickets[id].targetFile); // the 5 built-in bugs
   const calls = ids.length * NS.length * trials;
 
   // Rough estimate from the sizes seen in real runs: about 1,500 input tokens

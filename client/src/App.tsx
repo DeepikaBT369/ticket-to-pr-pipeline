@@ -176,6 +176,7 @@ interface FixResponse {
   meta?: FixMeta
   rootCause?: string
   selection?: { rule: string; reason: string }
+  reproduces?: boolean
 }
 
 function FixerStage({ ticketId }: { ticketId: string }) {
@@ -215,6 +216,11 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       {data.meta?.source === 'fallback' && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
           AI unavailable, showing pre-written candidates instead ({data.meta.reason})
+        </div>
+      )}
+      {data.reproduces === false && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
+          The original code already passes every test, so these tests do not reproduce the bug. The Locator may have picked the wrong file. Check the file before approving.
         </div>
       )}
       {data.rootCause && (

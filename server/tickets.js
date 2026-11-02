@@ -250,7 +250,8 @@ module.exports = {
     title: 'Checkout fails with TypeError when cart contains a digital product and shipping address is missing.',
     description:
       "Steps to reproduce:\n1. Add a digital product to cart\n2. Begin checkout without a saved address\n3. Click \"Proceed to payment\"\n\n" +
-      "Expected: redirect to address form or show inline error\n" +
+      "Expected: a cart with only digital products checks out without a shipping address (none is needed). " +
+      "A cart with any physical product still requires an address and fails with a clear error.\n" +
       "Actual: TypeError: Cannot read properties of undefined (reading 'country_code')\n" +
       "        at validateAddress (src/checkoutFlow.js)",
     keywords: ['address', 'checkout', 'validate', 'country_code', 'cart'],

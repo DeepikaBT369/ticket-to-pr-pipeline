@@ -343,43 +343,164 @@ function GateStage({ ticketId }: { ticketId: string }) {
 interface DiffLine {
   type: 'add' | 'rem' | 'ctx'
   text: string
+  oldNo?: number | null
+  newNo?: number | null
+}
+
+interface TestRun {
+  passed: number
+  total: number
+  tests: { name: string; pass: boolean }[]
+}
+
+interface ReviewSummary {
+  rootCause: string
+  before: TestRun
+  after: TestRun
+  tradeoffs: string
+  risks: string
+  testFile: string
+  alternatives: { id: string; title: string; passed: number; total: number; changedLines?: number }[]
+}
+
+// Pairs removed and added lines so the old and new file can sit side by side.
+function toSideBySide(lines: DiffLine[]) {
+  const rows: { left: DiffLine | null; right: DiffLine | null }[] = []
+  let i = 0
+  while (i < lines.length) {
+    if (lines[i].type === 'ctx') {
+      rows.push({ left: lines[i], right: lines[i] })
+      i++
+      continue
+    }
+    const rem: DiffLine[] = []
+    const add: DiffLine[] = []
+    while (i < lines.length && lines[i].type === 'rem') rem.push(lines[i++])
+    while (i < lines.length && lines[i].type === 'add') add.push(lines[i++])
+    for (let k = 0; k < Math.max(rem.length, add.length); k++) {
+      rows.push({ left: rem[k] ?? null, right: add[k] ?? null })
+    }
+  }
+  return rows
 }
 
 interface PrResponse {
   diff: { filePath: string; added: number; removed: number; lines: DiffLine[] }
   explanation: string
   commitMessage: string
+  summary?: ReviewSummary
   github?: { number?: number; url?: string; branch?: string; repo?: string; merged?: boolean; mergeError?: string; error?: string }
 }
 
 function ReviewView({ data }: { data: PrResponse }) {
+  const [mode, setMode] = useState<'unified' | 'side'>('unified')
+  const sm = data.summary
+  const num = (n?: number | null) => (n == null ? '' : n)
+  const cellClass = (l: DiffLine | null) =>
+    !l ? 'bg-[#0d1826]' : l.type === 'add' ? 'bg-[#0d2a22] text-[#4ade80]' : l.type === 'rem' ? 'bg-[#2a0d0d] text-[#f87171]' : 'bg-[#0d1826] text-[#c9d1ec]'
   return (
     <div className="space-y-6">
+      {sm && (
+        <div>
+          <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Review summary</p>
+          <div className="bg-[#162035] border border-[#1e3048] rounded-xl p-5 text-sm text-[#c9d1ec] leading-relaxed space-y-4">
+            {sm.rootCause && (
+              <div>
+                <p className="text-xs text-[#7a87aa] mb-1">Root cause <span className="text-[#3a4a62]">(the AI&apos;s explanation)</span></p>
+                <p>{sm.rootCause}</p>
+              </div>
+            )}
+            <div>
+              <p className="text-xs text-[#7a87aa] mb-1">Before and after <span className="text-[#3a4a62]">(measured: {sm.testFile} run on the original code and on this fix)</span></p>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                {[['Before', sm.before], ['After', sm.after]].map(([label, r]) => (
+                  <div key={label as string} className="rounded-lg bg-[#0d1826] border border-[#1e3048] p-3 space-y-1">
+                    <p className="font-semibold text-[#c9d1ec]">{label as string}: {(r as TestRun).passed}/{(r as TestRun).total} tests passed</p>
+                    {(r as TestRun).tests.map((t) => (
+                      <p key={t.name} className={t.pass ? 'text-[#4ade80]' : 'text-[#f87171]'}>{t.pass ? '✓' : '✗'} {t.name}</p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-[#7a87aa] mt-2">
+                Test gap: only these {sm.after.total} tests check this file. A behaviour they do not mention is not checked at all, so read the diff for edge cases.
+              </p>
+            </div>
+            {(sm.tradeoffs || sm.risks) && (
+              <div className="grid sm:grid-cols-2 gap-3 text-xs">
+                {sm.tradeoffs && <div><p className="text-[#7a87aa] mb-1">Trade-offs <span className="text-[#3a4a62]">(the AI&apos;s notes)</span></p><p>{sm.tradeoffs}</p></div>}
+                {sm.risks && <div><p className="text-[#7a87aa] mb-1">Risks <span className="text-[#3a4a62]">(the AI&apos;s notes)</span></p><p>{sm.risks}</p></div>}
+              </div>
+            )}
+            {sm.alternatives.length > 0 && (
+              <div>
+                <p className="text-xs text-[#7a87aa] mb-1">Other candidates, side by side (measured)</p>
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left text-[#7a87aa]"><th className="py-1 pr-3 font-medium">Candidate</th><th className="py-1 pr-3 font-medium">Tests passed</th><th className="py-1 font-medium">Lines changed</th></tr></thead>
+                  <tbody>
+                    <tr className="text-[#5eead4]"><td className="py-1 pr-3">Recommended</td><td className="py-1 pr-3">{sm.after.passed}/{sm.after.total}</td><td className="py-1">{data.diff.added + data.diff.removed}</td></tr>
+                    {sm.alternatives.map((a) => (
+                      <tr key={a.id} className="text-[#c9d1ec]"><td className="py-1 pr-3">{a.id}: {a.title}</td><td className="py-1 pr-3">{a.passed}/{a.total}</td><td className="py-1">{a.changedLines ?? '–'}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div>
-        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-3 font-medium">Code Diff</p>
+        <div className="flex items-center mb-3">
+          <p className="text-xs uppercase tracking-widest text-[#7a87aa] font-medium">Code Diff</p>
+          <div className="ml-auto flex gap-1 text-xs">
+            {(['unified', 'side'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-3 py-1 rounded-md border ${mode === m ? 'border-[#5eead4] text-[#5eead4]' : 'border-[#1e3048] text-[#7a87aa] hover:text-[#c9d1ec]'}`}
+              >
+                {m === 'unified' ? 'Unified' : 'Side by side'}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="rounded-xl border border-[#1e3048] overflow-hidden">
           <div className="bg-[#111f33] px-4 py-2 text-xs text-[#7a87aa] font-mono border-b border-[#1e3048] flex items-center gap-2">
             <span>{data.diff.filePath}</span>
             <span className="ml-auto text-[#5eead4]">+{data.diff.added} −{data.diff.removed}</span>
           </div>
           <div className="overflow-x-auto">
-            <pre className="text-xs font-mono leading-6">
-              {data.diff.lines.map((line, i) => (
-                <div
-                  key={i}
-                  className={`px-4 ${
-                    line.type === 'add' ? 'bg-[#0d2a22] text-[#4ade80]' :
-                    line.type === 'rem' ? 'bg-[#2a0d0d] text-[#f87171]' :
-                    'bg-[#0d1826] text-[#c9d1ec]'
-                  }`}
-                >
-                  <span className="select-none text-[#3a4a62] mr-3">
-                    {line.type === 'add' ? '+' : line.type === 'rem' ? '-' : ' '}
-                  </span>
-                  {line.text}
+            {mode === 'unified' ? (
+              <pre className="text-xs font-mono leading-6">
+                {data.diff.lines.map((line, i) => (
+                  <div key={i} className={`flex pr-4 ${cellClass(line)}`}>
+                    <span className="select-none text-[#3a4a62] w-10 text-right pr-2 shrink-0">{num(line.oldNo)}</span>
+                    <span className="select-none text-[#3a4a62] w-10 text-right pr-2 shrink-0">{num(line.newNo)}</span>
+                    <span className="select-none text-[#3a4a62] w-5 shrink-0">{line.type === 'add' ? '+' : line.type === 'rem' ? '-' : ' '}</span>
+                    <span className="whitespace-pre">{line.text}</span>
+                  </div>
+                ))}
+              </pre>
+            ) : (
+              <div className="text-xs font-mono leading-6 min-w-[640px]">
+                <div className="grid grid-cols-2 text-[#7a87aa] bg-[#111f33] border-b border-[#1e3048]">
+                  <div className="px-4 py-1">Original</div>
+                  <div className="px-4 py-1 border-l border-[#1e3048]">Recommended fix</div>
                 </div>
-              ))}
-            </pre>
+                {toSideBySide(data.diff.lines).map((row, i) => (
+                  <div key={i} className="grid grid-cols-2">
+                    <div className={`flex pr-2 ${cellClass(row.left)}`}>
+                      <span className="select-none text-[#3a4a62] w-10 text-right pr-2 shrink-0">{num(row.left?.oldNo)}</span>
+                      <span className="whitespace-pre">{row.left?.text ?? ''}</span>
+                    </div>
+                    <div className={`flex pr-2 border-l border-[#1e3048] ${cellClass(row.right)}`}>
+                      <span className="select-none text-[#3a4a62] w-10 text-right pr-2 shrink-0">{num(row.right?.newNo)}</span>
+                      <span className="whitespace-pre">{row.right?.text ?? ''}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -459,11 +580,11 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
     ;(async () => {
       try {
         const [fix, gate] = await Promise.all([
-          fetch(`/api/pipeline/${ticketId}/fix`).then((r) => r.json()) as Promise<FixResponse>,
-          fetch(`/api/pipeline/${ticketId}/gate`).then((r) => r.json()) as Promise<GateResponse>,
+          fetch(`/api/pipeline/${ticketId}/fix`, { signal: AbortSignal.timeout(90000) }).then((r) => r.json()) as Promise<FixResponse>,
+          fetch(`/api/pipeline/${ticketId}/gate`, { signal: AbortSignal.timeout(90000) }).then((r) => r.json()) as Promise<GateResponse>,
         ])
         const winner = fix.candidates.find((c) => c.id === fix.winnerId)!
-        const rev = await fetch(`/api/pipeline/${ticketId}/review`).then((r) => r.json()) as PrResponse
+        const rev = await fetch(`/api/pipeline/${ticketId}/review`, { signal: AbortSignal.timeout(90000) }).then((r) => r.json()) as PrResponse
         setReview(rev)
         setInfo({
           winnerId: winner.id,
@@ -473,7 +594,7 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
           gatePassed: gate.syntax.ok && gate.tests.ok && gate.staticScan.ok,
         })
       } catch (err: any) {
-        setError(err.message)
+        setError(err?.name === 'TimeoutError' ? 'The review summary took longer than 90 seconds to load. The server may be waking up; reload the page and try again.' : err.message)
       }
     })()
   }, [ticketId])
@@ -551,7 +672,7 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
                 )}
               </div>
             ) : (
-              <p className="text-sm text-[#7a87aa] mb-6">Loading review summary…</p>
+              <p className="text-sm text-[#7a87aa] mb-6">Loading review summary (up to a minute if the server was asleep)…</p>
             )}
             <div className="flex gap-3">
               <button

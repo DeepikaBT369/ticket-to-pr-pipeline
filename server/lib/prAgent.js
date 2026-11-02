@@ -7,6 +7,8 @@ function buildDiff(originalContent, newContent, filePath) {
   let added = 0;
   let removed = 0;
   const lines = [];
+  let oldNo = 1;
+  let newNo = 1;
 
   parts.forEach((part) => {
     const type = part.added ? 'add' : part.removed ? 'rem' : 'ctx';
@@ -14,7 +16,10 @@ function buildDiff(originalContent, newContent, filePath) {
     // diffLines leaves a trailing empty string from the final newline; drop it.
     if (rows[rows.length - 1] === '') rows.pop();
     rows.forEach((text) => {
-      lines.push({ type, text });
+      // oldNo/newNo are the line numbers in the original and the fixed file.
+      lines.push({ type, text, oldNo: type === 'add' ? null : oldNo, newNo: type === 'rem' ? null : newNo });
+      if (type !== 'add') oldNo++;
+      if (type !== 'rem') newNo++;
       if (type === 'add') added++;
       if (type === 'rem') removed++;
     });

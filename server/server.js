@@ -347,10 +347,25 @@ function buildReview(id, ticket, run) {
   if (run.review) return run.review;
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   const original = fs.readFileSync(targetFile, 'utf8');
+  // Before/after are measured: the same test file is run on the original code
+  // and on the recommended fix. Risks and trade-offs are the AI's own notes.
+  const before = tryCandidate(targetFile, original, path.join(REPO_ROOT, ticket.testFile));
+  const brief = (r) => ({ passed: r.passed, total: r.total, tests: r.tests });
   run.review = {
     diff: buildDiff(original, run.winner.content, ticket.targetFile),
     explanation: explanation(run.winner, run.selection),
     commitMessage: commitMessage(id, run.winner),
+    summary: {
+      rootCause: run.rootCause || '',
+      before: brief(before),
+      after: brief(run.winner),
+      tradeoffs: run.winner.tradeoffs || '',
+      risks: run.winner.risks || '',
+      testFile: ticket.testFile,
+      alternatives: (run.candidates || []).filter((c) => c.id !== run.winner.id).map((c) => ({
+        id: c.id, title: c.title, passed: c.passed, total: c.total, changedLines: c.changedLines,
+      })),
+    },
   };
   return run.review;
 }

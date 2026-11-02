@@ -262,6 +262,7 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
       selection: done.selection,
       rootCause: done.rootCause || '',
       reproduces: done.reproduces,
+      recommendedId: done.recommendedId,
     });
   }
 
@@ -321,11 +322,32 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
     const d = buildDiff(originalContent, c.content, ticket.targetFile);
     c.changedLines = d.added + d.removed;
   });
-  const { winner, selection } = chooseWinner(candidateResults);
+  const chosen = chooseWinner(candidateResults);
+  const selection = chosen.selection;
+  const recommendedId = chosen.winner.id;
+  // If the reviewer picked a different candidate, keep their pick. The
+  // recommendation itself is still computed from the measured results.
+  const picked = run.chosenId && candidateResults.find((c) => c.id === run.chosenId);
+  const winner = picked || chosen.winner;
 
   const rootCause = run.generated.rootCause || '';
-  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner, selection, rootCause, reproduces });
-  res.json({ candidates: candidateResults, winnerId: winner.id, meta, selection, rootCause, reproduces });
+  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner, selection, rootCause, reproduces, recommendedId });
+  res.json({ candidates: candidateResults, winnerId: winner.id, recommendedId, meta, selection, rootCause, reproduces });
+});
+
+// The reviewer picks which candidate to review and approve (the recommended
+// one is only the default). Changing the pick clears the Gate result and the
+// review summary, so both are computed again for the new pick.
+app.post('/api/pipeline/:id/select', (req, res) => {
+  const run = store.get(req.params.id);
+  if (!getTicket(req.params.id)) return res.status(404).json({ error: 'ticket not found' });
+  if (!run || !run.winner || !run.candidates) return res.status(400).json({ error: 'run the fixer stage first' });
+  if (run.status === store.STATUS.APPROVED) return res.status(409).json({ error: 'This ticket is already approved.' });
+  const pick = run.candidates.find((c) => c.id === req.body?.candidateId);
+  if (!pick) return res.status(400).json({ error: 'unknown candidate' });
+  console.log('[select]', req.params.id, pick.id, pick.id === run.recommendedId ? '(recommended)' : '(overrides the recommendation)');
+  store.setStatus(req.params.id, store.STATUS.FIXED, { winner: pick, chosenId: pick.id, gate: null, review: null });
+  res.json({ chosenId: pick.id, recommendedId: run.recommendedId });
 });
 
 app.get('/api/pipeline/:id/gate', (req, res) => {
@@ -359,7 +381,12 @@ function buildReview(id, ticket, run) {
   const brief = (r) => ({ passed: r.passed, total: r.total, tests: r.tests });
   run.review = {
     diff: buildDiff(original, run.winner.content, ticket.targetFile),
-    explanation: explanation(run.winner, run.selection),
+    explanation:
+      run.recommendedId && run.winner.id !== run.recommendedId
+        ? `The reviewer chose ${run.winner.id} (${run.winner.title}) instead of the recommended ${run.recommendedId}. ` +
+          `${run.winner.id} passed ${run.winner.passed}/${run.winner.total} tests and changes ${run.winner.changedLines} lines. ` +
+          `Why ${run.recommendedId} was recommended: ${run.selection.reason}`
+        : explanation(run.winner, run.selection),
     commitMessage: commitMessage(id, run.winner, ticket.targetFile),
     summary: {
       rootCause: run.rootCause || '',

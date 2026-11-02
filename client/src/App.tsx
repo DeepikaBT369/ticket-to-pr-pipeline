@@ -173,6 +173,7 @@ interface FixMeta {
 interface FixResponse {
   candidates: FixCandidate[]
   winnerId: string
+  recommendedId?: string
   meta?: FixMeta
   rootCause?: string
   selection?: { rule: string; reason: string }
@@ -182,6 +183,7 @@ interface FixResponse {
 function FixerStage({ ticketId }: { ticketId: string }) {
   const [data, setData] = useState<FixResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [choosing, setChoosing] = useState<string | null>(null)
 
   useEffect(() => {
     setData(null)
@@ -192,8 +194,29 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       .catch((err) => setError(err.message))
   }, [ticketId])
 
+  const choose = async (candidateId: string) => {
+    setChoosing(candidateId)
+    try {
+      const res = await fetch(`/api/pipeline/${ticketId}/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidateId }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || 'Could not select that fix')
+      const fresh = await fetch(`/api/pipeline/${ticketId}/fix`).then(checkJson)
+      setData(fresh)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setChoosing(null)
+    }
+  }
+
   if (error) return <ErrorPanel message={error} />
   if (!data) return <LoadingPanel />
+
+  const recommendedId = data.recommendedId || data.winnerId
 
   return (
     <div className="fade-in space-y-4">
@@ -237,13 +260,15 @@ function FixerStage({ ticketId }: { ticketId: string }) {
       )}
       {data.candidates.map((c) => {
         const allPass = c.id === data.winnerId
+        const isRecommended = c.id === recommendedId
         return (
           <div key={c.id} className={`rounded-xl border p-5 ${allPass ? 'border-[#2d7a6e] bg-[#0d2a22]' : 'border-[#1e3048] bg-[#162035]'}`}>
             <div className="flex items-start justify-between gap-4 mb-3">
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-xs text-[#7a87aa] font-mono">{c.id}</span>
-                  {allPass && <span className="text-xs bg-[#5eead4] text-[#0d1826] px-2 py-0.5 rounded-full font-semibold">Recommended</span>}
+                  {isRecommended && <span className="text-xs bg-[#5eead4] text-[#0d1826] px-2 py-0.5 rounded-full font-semibold">Recommended</span>}
+                  {allPass && !isRecommended && <span className="text-xs bg-amber-300 text-[#0d1826] px-2 py-0.5 rounded-full font-semibold">Your choice</span>}
                 </div>
                 <h3 className="text-[#c9d1ec] font-semibold text-sm">{c.title}</h3>
                 <p className="text-[#7a87aa] text-xs mt-1 leading-relaxed">{c.description}</p>
@@ -267,6 +292,18 @@ function FixerStage({ ticketId }: { ticketId: string }) {
                 </span>
               ))}
             </div>
+            {!allPass && (
+              <button
+                onClick={() => choose(c.id)}
+                disabled={choosing !== null}
+                className="mt-4 text-sm font-medium px-4 py-2 rounded-lg border border-[#5eead4] text-[#5eead4] hover:bg-[#0d2a22] transition-colors disabled:opacity-50"
+              >
+                {choosing === c.id ? 'Selecting…' : `Review ${c.id} instead`}
+              </button>
+            )}
+            {allPass && !isRecommended && (
+              <p className="mt-4 text-xs text-amber-300">You will review and approve this fix. The recommendation was {recommendedId}.</p>
+            )}
           </div>
         )
       })}
@@ -575,7 +612,7 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
   const [decision, setDecision] = useState<'none' | 'approving' | 'approved' | 'changes' | 'revising' | 'sent'>('none')
   const [sentMessage, setSentMessage] = useState('')
   const [feedback, setFeedback] = useState('')
-  const [info, setInfo] = useState<{ winnerId: string; coverage: number; testsPassed: number; testsTotal: number; gatePassed: boolean } | null>(null)
+  const [info, setInfo] = useState<{ winnerId: string; recommendedId?: string; coverage: number; testsPassed: number; testsTotal: number; gatePassed: boolean } | null>(null)
   const [review, setReview] = useState<PrResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -595,6 +632,7 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
         setReview(rev)
         setInfo({
           winnerId: winner.id,
+          recommendedId: fix.recommendedId,
           coverage: winner.coverage,
           testsPassed: gate.tests.passed,
           testsTotal: gate.tests.total,
@@ -669,7 +707,7 @@ function ApprovalStage({ ticketId, onApprove, onRevised }: { ticketId: string; o
             </div>
             {info ? (
               <div className="space-y-3 mb-6 text-sm text-[#7a87aa]">
-                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.winnerId} recommended ({info.coverage}% of its tests pass)</div>
+                <div className="flex items-center gap-2"><span className="text-[#5eead4]">✓</span> {info.recommendedId && info.recommendedId !== info.winnerId ? `You chose ${info.winnerId} (recommended: ${info.recommendedId})` : `${info.winnerId} recommended`} ({info.coverage}% of its tests pass)</div>
                 <div className="flex items-center gap-2">
                   <span className={info.gatePassed ? 'text-[#5eead4]' : 'text-[#f87171]'}>{info.gatePassed ? '✓' : '✗'}</span>
                   Gate: {info.testsPassed}/{info.testsTotal} tests passed{info.gatePassed ? '' : ', checks failed'}

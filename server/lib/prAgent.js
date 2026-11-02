@@ -42,9 +42,13 @@ function explanation(candidate, selection) {
   return parts.join(' ');
 }
 
-function commitMessage(ticketId, candidate) {
+// The scope is the folder of the changed file (src/shipping/x.js -> shipping),
+// or the file name when it sits directly in src/ (src/checkoutFlow.js).
+function commitMessage(ticketId, candidate, targetFile = '') {
   const num = ticketId.replace(/[^0-9]/g, '');
-  return `fix(checkout): ${candidate.title.toLowerCase()} (#${num})`;
+  const parts = String(targetFile).split('/').filter(Boolean);
+  const scope = parts.length > 2 ? parts[parts.length - 2] : (parts[parts.length - 1] || 'fix').replace(/\.js$/, '');
+  return `fix(${scope}): ${candidate.title.toLowerCase()} (#${num})`;
 }
 
 module.exports = { buildDiff, explanation, commitMessage };

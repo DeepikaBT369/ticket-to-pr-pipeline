@@ -337,7 +337,7 @@ app.get('/api/pipeline/:id/gate', (req, res) => {
 
   const targetFile = path.join(REPO_ROOT, ticket.targetFile);
   const testFile = path.join(REPO_ROOT, ticket.testFile);
-  const gateResults = runGate(targetFile, testFile, run.winner.content);
+  const gateResults = { ...runGate(targetFile, testFile, run.winner.content), testFile: ticket.testFile };
 
   const passed = gateResults.syntax.ok && gateResults.tests.ok && gateResults.staticScan.ok;
   store.setStatus(req.params.id, passed ? store.STATUS.GATED : store.STATUS.GATE_FAILED, {
@@ -360,7 +360,7 @@ function buildReview(id, ticket, run) {
   run.review = {
     diff: buildDiff(original, run.winner.content, ticket.targetFile),
     explanation: explanation(run.winner, run.selection),
-    commitMessage: commitMessage(id, run.winner),
+    commitMessage: commitMessage(id, run.winner, ticket.targetFile),
     summary: {
       rootCause: run.rootCause || '',
       before: brief(before),

@@ -278,6 +278,7 @@ interface GateResponse {
   syntax: { ok: boolean; detail: string; durationMs: number }
   tests: { passed: number; failed: number; total: number; ok: boolean; durationMs: number }
   staticScan: { ok: boolean; debugStatements: number; durationMs: number }
+  testFile?: string
 }
 
 function GateStage({ ticketId }: { ticketId: string }) {
@@ -299,7 +300,7 @@ function GateStage({ ticketId }: { ticketId: string }) {
   const groups = [
     {
       category: 'Test Suite',
-      items: [{ name: `checkout.test.js (${data.tests.total} tests)`, pass: data.tests.ok, duration: `${data.tests.durationMs}ms` }],
+      items: [{ name: `${(data.testFile || 'tests').split('/').pop()} (${data.tests.total} tests)`, pass: data.tests.ok, duration: `${data.tests.durationMs}ms` }],
     },
     {
       category: 'Syntax Check',

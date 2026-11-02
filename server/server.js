@@ -74,6 +74,7 @@ function resolveTarget(files) {
 const originalFiles = {};
 TICKET_IDS.forEach((id) => {
   const rel = tickets[id].targetFile;
+  if (!rel) return; // practice-repo tickets get their file from the Locator
   originalFiles[rel] = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 });
 
@@ -82,7 +83,7 @@ app.post('/api/reset', async (req, res) => {
     fs.writeFileSync(path.join(REPO_ROOT, rel), content);
   });
   store.reset(allIds());
-  Object.values(jiraTickets).forEach((t) => {
+  [...Object.values(jiraTickets), ...Object.values(tickets).filter((t) => t.source === 'repo')].forEach((t) => {
     t.targetFile = null;
     t.testFile = null;
   });
@@ -185,7 +186,7 @@ app.get('/api/pipeline/:id/locate', (req, res) => {
   const files = locate(ticket, REPO_ROOT);
   let resolution = null;
   let blocked = null;
-  if (ticket.source === 'jira') {
+  if (ticket.source === 'jira' || ticket.source === 'repo') {
     resolution = resolveTarget(files);
     if (resolution) {
       ticket.targetFile = resolution.targetFile;
@@ -260,6 +261,7 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
       meta: done.generated?.meta,
       selection: done.selection,
       rootCause: done.rootCause || '',
+      reproduces: done.reproduces,
     });
   }
 
@@ -282,8 +284,8 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
     } catch (err) {
       console.error(`[fixer] LLM failed for ${req.params.id}: ${err.message}`);
       if (!ticket.candidates) {
-        // Jira tickets have no pre-written fixes to fall back on.
-        return res.status(503).json({ error: `The AI could not be reached (${err.message}), and tickets from Jira have no pre-written fallback fixes.` });
+        // Jira and practice-repo tickets have no pre-written fixes to fall back on.
+        return res.status(503).json({ error: `The AI could not be reached (${err.message}), and tickets from Jira and the practice repo have no pre-written fallback fixes.` });
       }
       run.generated = {
         candidates: ticket.candidates,
@@ -311,6 +313,10 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
   });
 
   const originalContent = fs.readFileSync(targetFile, 'utf8');
+  // Do the tests fail on the ORIGINAL code? If not, they do not reproduce the
+  // bug, which usually means the Locator picked the wrong file.
+  const baseRun = tryCandidate(targetFile, originalContent, testFile);
+  const reproduces = baseRun.total > 0 && baseRun.passed < baseRun.total;
   candidateResults.forEach((c) => {
     const d = buildDiff(originalContent, c.content, ticket.targetFile);
     c.changedLines = d.added + d.removed;
@@ -318,8 +324,8 @@ app.get('/api/pipeline/:id/fix', async (req, res) => {
   const { winner, selection } = chooseWinner(candidateResults);
 
   const rootCause = run.generated.rootCause || '';
-  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner, selection, rootCause });
-  res.json({ candidates: candidateResults, winnerId: winner.id, meta, selection, rootCause });
+  store.setStatus(req.params.id, store.STATUS.FIXED, { candidates: candidateResults, winner, selection, rootCause, reproduces });
+  res.json({ candidates: candidateResults, winnerId: winner.id, meta, selection, rootCause, reproduces });
 });
 
 app.get('/api/pipeline/:id/gate', (req, res) => {

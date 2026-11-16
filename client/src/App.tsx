@@ -1366,10 +1366,112 @@ function Connector({ completed }: { completed: boolean }) {
   )
 }
 
+// ── About page ────────────────────────────────────────────────────────────────
+
+const ABOUT_STAGES: { name: string; text: string }[] = [
+  { name: 'Locator', text: 'Reads the ticket, searches the code for matching keywords and picks the file most likely to hold the bug.' },
+  { name: 'Fixer', text: 'The AI writes up to three candidate fixes. Each one is tested for real. The recommendation is the one with the most tests passing, then the fewest changed lines.' },
+  { name: 'Gate', text: 'Runs the tests, a syntax check and a scan for leftover debug statements on the fix you picked.' },
+  { name: 'Approval', text: 'A person reads the root cause, the before and after test results and the diff, then approves or asks for changes (up to two revisions).' },
+  { name: 'PR Agent', text: 'Opens and merges a real GitHub pull request, only after approval. The server refuses to open one without it.' },
+  { name: 'Cost & Ablation', text: 'Shows what the run cost, measured from the AI’s own token counts, and how cost changes with 1, 2 or 3 candidates.' },
+]
+
+function AboutSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="mb-8">
+      <h2 className="text-sm font-semibold text-[#5eead4] uppercase tracking-widest mb-3">{title}</h2>
+      <div className="text-sm text-[#c9d1ec] leading-relaxed space-y-3">{children}</div>
+    </section>
+  )
+}
+
+function AboutPage({ onStart }: { onStart: () => void }) {
+  return (
+    <main className="flex-1 px-8 py-8 max-w-3xl mx-auto w-full">
+      <div className="mb-8">
+        <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-1 font-medium">About</p>
+        <h1 className="text-2xl font-semibold text-[#c9d1ec] mb-3">Ticket to PR Pipeline</h1>
+        <p className="text-sm text-[#c9d1ec] leading-relaxed">
+          A tool that takes a bug ticket and turns it into a reviewed pull request. An AI proposes the fix, the tests check it,
+          and a person decides whether it ships.
+        </p>
+        <button
+          onClick={onStart}
+          className="mt-4 text-xs font-medium px-4 py-2 rounded-lg bg-[#5eead4] text-[#0d1826] hover:opacity-90 transition-opacity"
+        >
+          Open the dashboard
+        </button>
+      </div>
+
+      <AboutSection title="The problem">
+        <p>
+          Small bug fixes take a developer time to find, fix, test and write up. An AI can draft a fix quickly, but nobody should
+          merge an AI’s code on trust. This project asks: how much of that work can an AI do while a human still makes the final call?
+        </p>
+      </AboutSection>
+
+      <AboutSection title="How it works">
+        <ol className="space-y-3">
+          {ABOUT_STAGES.map((st, i) => (
+            <li key={st.name} className="flex gap-3">
+              <span className="shrink-0 w-6 h-6 rounded-full bg-[#162035] border border-[#1e3048] text-xs text-[#5eead4] flex items-center justify-center">{i + 1}</span>
+              <span><b className="text-[#c9d1ec]">{st.name}.</b> <span className="text-[#9aa7c7]">{st.text}</span></span>
+            </li>
+          ))}
+        </ol>
+      </AboutSection>
+
+      <AboutSection title="What is measured and what is the AI’s opinion">
+        <p>
+          Test results, line counts, token counts and cost are measured. Anything the AI wrote, such as the root cause, trade-offs and risks,
+          is labelled as the AI’s notes. Nothing on screen is made up to look good.
+        </p>
+      </AboutSection>
+
+      <AboutSection title="Where the tickets come from">
+        <p>
+          Tickets come from a built-in set of practice bugs and can also be read from Jira (read-only for now). The code being fixed
+          is a practice repository of 44 files with planted bugs, and the pull requests open in a separate demo repository on GitHub.
+        </p>
+      </AboutSection>
+
+      <AboutSection title="What it cannot do yet">
+        <ul className="list-disc pl-5 space-y-1 text-[#9aa7c7]">
+          <li>Each fix changes one file. Fixes that span several files are not supported.</li>
+          <li>It has been tested on easy bugs. Harder bugs may not be fixed.</li>
+          <li>Merge conflicts are reported but not resolved automatically.</li>
+          <li>It does not move the Jira ticket to Done.</li>
+          <li>State is kept in memory, so it is lost when the server restarts or sleeps.</li>
+          <li>Passing tests do not prove a fix is right. That is why a person approves it.</li>
+        </ul>
+      </AboutSection>
+
+      <AboutSection title="Who built it">
+        <p>
+          Built by Deepika B T for the IT Capstone (MSHT3999) in the MS in Information Technology program at Clark University.
+          The design changed after five people tested an earlier version. Their feedback led to the required approval step,
+          the reasons shown for each recommendation, the fuller review screen and the larger practice repository.
+        </p>
+        <p className="text-[#9aa7c7]">
+          Code: <a className="text-[#5eead4] underline" href="https://github.com/DeepikaBT369/ticket-to-pr-pipeline" target="_blank" rel="noreferrer">github.com/DeepikaBT369/ticket-to-pr-pipeline</a>
+        </p>
+      </AboutSection>
+
+      <AboutSection title="Your data">
+        <p className="text-[#9aa7c7]">
+          The app asks for no account and no personal details. The end-of-run rating (scores and an optional comment) is kept in the
+          server’s memory and is cleared when the server restarts.
+        </p>
+      </AboutSection>
+    </main>
+  )
+}
+
 // ── Main app ──────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [view, setView] = useState<'dashboard' | 'pipeline'>('dashboard')
+  const [view, setView] = useState<'dashboard' | 'pipeline' | 'about'>('dashboard')
   const [ticketId, setTicketId] = useState('BUG-4821')
   const [activeStage, setActiveStage] = useState(1)
   const [viewingStage, setViewingStage] = useState(1)
@@ -1446,6 +1548,14 @@ export default function App() {
             >
               Pipeline
             </button>
+            <button
+              onClick={() => setView('about')}
+              className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
+                view === 'about' ? 'bg-[#1e3048] text-[#5eead4]' : 'text-[#7a87aa] hover:text-[#c9d1ec]'
+              }`}
+            >
+              About
+            </button>
           </nav>
         </div>
         <div className="flex items-center gap-2">
@@ -1465,7 +1575,9 @@ export default function App() {
         </div>
       </header>
 
-      {view === 'dashboard' ? (
+      {view === 'about' ? (
+        <AboutPage onStart={() => setView('dashboard')} />
+      ) : view === 'dashboard' ? (
         <main className="flex-1 px-8 py-8 max-w-4xl mx-auto w-full">
           <div className="mb-6">
             <p className="text-xs uppercase tracking-widest text-[#7a87aa] mb-1 font-medium">Overview</p>

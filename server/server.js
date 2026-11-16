@@ -571,6 +571,47 @@ app.post('/api/pipeline/:id/request-changes', async (req, res) => {
 
 app.get('/api/feedback', (req, res) => res.json(feedbackLog));
 
+// Ratings from the pop-up at the end of a run. Like feedbackLog this is kept
+// in memory and is NOT cleared by Reset demo; every rating is also printed to
+// the server log (Render > Logs), which is the second copy.
+//   ease  = "How easy was it to review this fix?" 1 (very difficult) to 7 (very easy)
+//   trust = "How much do you trust this fix?"     1 (not at all) to 5 (completely)
+const ratingLog = [];
+
+app.post('/api/pipeline/:id/rating', (req, res) => {
+  const ticket = getTicket(req.params.id);
+  const run = store.get(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+  if (!run || run.status !== store.STATUS.APPROVED) {
+    return res.status(409).json({ error: 'A run can be rated after its fix is approved.' });
+  }
+  const { ease, trust } = req.body || {};
+  const comment = String(req.body?.comment || '').slice(0, 500);
+  if (!Number.isInteger(ease) || ease < 1 || ease > 7) return res.status(400).json({ error: 'ease must be a whole number from 1 to 7' });
+  if (!Number.isInteger(trust) || trust < 1 || trust > 5) return res.status(400).json({ error: 'trust must be a whole number from 1 to 5' });
+
+  const entry = {
+    ticketId: req.params.id,
+    ease,
+    trust,
+    comment,
+    chosenId: run.winner?.id || null,
+    recommendedId: run.recommendedId || null,
+    overrodeRecommendation: !!(run.recommendedId && run.winner && run.winner.id !== run.recommendedId),
+    revisions: run.revisions || 0,
+    at: new Date().toISOString(),
+  };
+  ratingLog.push(entry);
+  console.log('[rating]', JSON.stringify(entry));
+  res.json({ recorded: true });
+});
+
+app.get('/api/ratings', (req, res) => {
+  const n = ratingLog.length;
+  const avg = (key) => (n ? Math.round((ratingLog.reduce((s, r) => s + r[key], 0) / n) * 100) / 100 : null);
+  res.json({ count: n, averageEase: avg('ease'), averageTrust: avg('trust'), ratings: ratingLog });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Ticket-to-PR pipeline server running at http://localhost:${PORT}`);

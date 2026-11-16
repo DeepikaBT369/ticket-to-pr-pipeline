@@ -822,6 +822,125 @@ interface AblationResult {
 const fmtUsd = (v: number | null) => (v == null ? 'not set' : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`)
 const fmtNum = (v: number) => v.toLocaleString('en-US')
 
+// Remembered for this page session, so the pop-up does not return after a rating or a skip.
+const ratedTickets = new Set<string>()
+const skippedTickets = new Set<string>()
+
+function ScaleRow({ label, low, high, max, value, onPick }: { label: string; low: string; high: string; max: number; value: number | null; onPick: (n: number) => void }) {
+  return (
+    <div>
+      <p className="text-sm text-[#c9d1ec] mb-2">{label}</p>
+      <div className="flex gap-2" role="radiogroup" aria-label={label}>
+        {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            role="radio"
+            aria-checked={value === n}
+            onClick={() => onPick(n)}
+            className={`flex-1 h-10 rounded-lg border text-sm font-mono transition-colors ${value === n ? 'bg-[#5eead4] border-[#5eead4] text-[#0d1826] font-semibold' : 'border-[#1e3048] text-[#c9d1ec] hover:border-[#5eead4]'}`}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+      <div className="flex justify-between text-xs text-[#7a87aa] mt-1">
+        <span>{low}</span>
+        <span>{high}</span>
+      </div>
+    </div>
+  )
+}
+
+function RatingModal({ ticketId }: { ticketId: string }) {
+  const [open, setOpen] = useState(!ratedTickets.has(ticketId) && !skippedTickets.has(ticketId))
+  const [done, setDone] = useState(ratedTickets.has(ticketId))
+  const [ease, setEase] = useState<number | null>(null)
+  const [trust, setTrust] = useState<number | null>(null)
+  const [comment, setComment] = useState('')
+  const [sending, setSending] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const skip = () => {
+    skippedTickets.add(ticketId)
+    setOpen(false)
+  }
+
+  const submit = async () => {
+    if (ease == null || trust == null) return
+    setSending(true)
+    setErr(null)
+    try {
+      const res = await fetch(`/api/pipeline/${ticketId}/rating`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ease, trust, comment }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || 'Could not save your rating')
+      ratedTickets.add(ticketId)
+      setDone(true)
+      setTimeout(() => setOpen(false), 1500)
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <>
+      {!open && !done && (
+        <button onClick={() => setOpen(true)} className="text-sm text-[#5eead4] underline underline-offset-4">
+          Rate this run
+        </button>
+      )}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true" aria-labelledby="rating-title">
+          <div className="w-full max-w-md rounded-2xl border border-[#1e3048] bg-[#111f33] p-6 space-y-5">
+            {done ? (
+              <p className="text-[#5eead4] text-center py-6">Thanks, your rating was saved.</p>
+            ) : (
+              <>
+                <div>
+                  <h2 id="rating-title" className="text-lg font-semibold text-[#e6ebf5]">How did this run go?</h2>
+                  <p className="text-xs text-[#7a87aa] mt-1">Two quick questions about the fix you just approved for {ticketId}.</p>
+                </div>
+                <ScaleRow label="How easy was it to review this fix?" low="1 · Very difficult" high="7 · Very easy" max={7} value={ease} onPick={setEase} />
+                <ScaleRow label="How much do you trust this fix?" low="1 · Not at all" high="5 · Completely" max={5} value={trust} onPick={setTrust} />
+                <div>
+                  <label htmlFor="rating-comment" className="text-sm text-[#c9d1ec]">Anything we should change? (optional)</label>
+                  <textarea
+                    id="rating-comment"
+                    value={comment}
+                    onChange={(e) => setComment(e.target.value)}
+                    maxLength={500}
+                    rows={3}
+                    className="mt-2 w-full rounded-lg bg-[#0d1826] border border-[#1e3048] p-3 text-sm text-[#e6ebf5] focus:outline-none focus:border-[#5eead4]"
+                  />
+                </div>
+                {err && <p className="text-xs text-red-400">{err}</p>}
+                <div className="flex gap-3">
+                  <button
+                    onClick={submit}
+                    disabled={ease == null || trust == null || sending}
+                    className="flex-1 rounded-lg bg-[#5eead4] text-[#0d1826] font-semibold py-2.5 disabled:opacity-40"
+                  >
+                    {sending ? 'Saving…' : 'Submit rating'}
+                  </button>
+                  <button onClick={skip} className="rounded-lg border border-[#1e3048] text-[#c9d1ec] px-4 py-2.5 hover:border-[#5eead4]">
+                    Skip
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 function CostStage({ ticketId }: { ticketId: string }) {
   const [ticket, setTicket] = useState<TicketCost | null>(null)
   const [summary, setSummary] = useState<CostSummary | null>(null)
@@ -851,6 +970,7 @@ function CostStage({ ticketId }: { ticketId: string }) {
 
   return (
     <div className="fade-in space-y-6">
+      <RatingModal ticketId={ticketId} />
       {!ticket.usedAI && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">
           No AI call was made for this ticket in this server session (the pre-written candidates were used, or the server restarted), so there is no cost to show.
